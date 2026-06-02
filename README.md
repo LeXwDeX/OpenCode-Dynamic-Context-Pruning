@@ -136,8 +136,8 @@ Each level overrides the previous, so project settings take priority over global
         //     "openai/gpt-5.3-codex": 50000,
         //     "anthropic/claude-sonnet-4.6": "25%"
         // },
-        // How often the context-limit nudge fires (1 = every fetch, 5 = every 5th)
-        "nudgeFrequency": 5,
+        // How often the context-limit nudge fires (1 = every fetch, 2 = every 2nd)
+        "nudgeFrequency": 2,
         // Start adding compression reminders after this many
         // messages have happened since the last user message
         "iterationNudgeThreshold": 15,
