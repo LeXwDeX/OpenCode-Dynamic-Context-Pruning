@@ -59,7 +59,7 @@ test("system prompt overrides handle reminder tags safely", async (t) => {
             const runtimeSystemPrompt = fixture.store.getRuntimePrompts().system
 
             assert.match(runtimeSystemPrompt, /Extra override line\./)
-            assert.match(runtimeSystemPrompt, /environment-injected metadata/)
+            assert.match(runtimeSystemPrompt, /环境注入的元数据/)
         } finally {
             fixture.cleanup()
         }

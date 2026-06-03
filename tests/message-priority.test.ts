@@ -914,3 +914,56 @@ test("injectMessageIds skips assistant with empty text part (issue #463)", () =>
         "empty text part should remain untouched",
     )
 })
+
+test("stripHallucinationsFromString strips trailing mXXXX hallucinations (issue #555)", () => {
+    // Trailing mXXXX at end of response - the \nm0340\n at the end gets stripped
+    assert.equal(
+        stripHallucinationsFromString("Total: maybe 20 lines changed. Clean and reviewable.\n\nm0340\n"),
+        "Total: maybe 20 lines changed. Clean and reviewable.\n",
+    )
+
+    // Just trailing with newline
+    assert.equal(
+        stripHallucinationsFromString("some text\nm0001"),
+        "some text",
+    )
+
+    // Should not strip mXXXX in the middle of text
+    assert.equal(
+        stripHallucinationsFromString("see m0001 for details\nmore text"),
+        "see m0001 for details\nmore text",
+    )
+
+    // Should not strip mXXXX without leading newline
+    assert.equal(
+        stripHallucinationsFromString("textm0340"),
+        "textm0340",
+    )
+})
+
+test("stripHallucinationsFromString removes injected tag suffix before paired regex (issue #556)", () => {
+    // The in-content mention of a dcp tag followed by injected closing tag
+    const input =
+        'The tag called `<dcp-message-id>` is used to track messages. ' +
+        'This text should survive.\n\n' +
+        '<dcp-message-id>m0369</dcp-message-id>'
+
+    const result = stripHallucinationsFromString(input)
+
+    // After fix: the injected suffix is removed first, so the in-content tag
+    // doesn't match as a paired tag that truncates the content
+    assert.ok(result.includes("This text should survive"), "content after in-text tag mention should not be deleted")
+    assert.ok(result.includes("The tag called"), "content before the tag should be preserved")
+})
+
+test("stripHallucinationsFromString handles combined hallucination patterns", () => {
+    // Both a paired DCP tag and a trailing mXXXX
+    const input = "response text<dcp-foo>hallucinated</dcp-foo> more content\nm0123"
+    const result = stripHallucinationsFromString(input)
+    assert.equal(result, "response text more content")
+
+    // Only unpaired tag with trailing ref
+    const input2 = "text</dcp-message-id> end\nm9999"
+    const result2 = stripHallucinationsFromString(input2)
+    assert.equal(result2, "text end")
+})
