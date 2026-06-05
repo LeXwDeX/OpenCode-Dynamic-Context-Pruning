@@ -34,12 +34,12 @@ export interface LastNonIgnoredMessage {
     index: number
 }
 
-export function getNudgeFrequency(config: PluginConfig): number {
-    return Math.max(1, Math.floor(config.compress.nudgeFrequency || 1))
+export function getNudgeFrequency(_config: PluginConfig): number {
+    return 1
 }
 
-export function getIterationNudgeThreshold(config: PluginConfig): number {
-    return Math.max(1, Math.floor(config.compress.iterationNudgeThreshold || 1))
+export function getIterationNudgeThreshold(_config: PluginConfig): number {
+    return 1
 }
 
 export function findLastNonIgnoredMessage(messages: WithParts[]): LastNonIgnoredMessage | null {
