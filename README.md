@@ -1,63 +1,65 @@
-# Dynamic Context Pruning Plugin
+# 动态上下文剪枝插件
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/dansmolsky)
 [![npm version](https://img.shields.io/npm/v/@lexwdex-org/opencode-dcp.svg)](https://www.npmjs.com/package/@lexwdex-org/opencode-dcp)
 
-Automatically reduces token usage in OpenCode by managing conversation context.
+[**English**](./README.en.md) | **中文**
+
+通过管理对话上下文，自动减少 OpenCode 中的 token 消耗。
 
 ![DCP in action](assets/images/dcp-demo9.png)
 
-## Installation
+## 安装
 
-Install from the CLI:
+从 CLI 安装：
 
 ```bash
 opencode plugin @lexwdex-org/opencode-dcp@latest --global
 ```
 
-This installs the package and adds it to your global OpenCode config.
+这会安装该包并将其添加到全局 OpenCode 配置中。
 
-## How It Works
+## 工作原理
 
-DCP reduces context size through a compress tool and automatic cleanup. Your session history is never modified — DCP replaces pruned content with placeholders before sending requests to your LLM.
+DCP 通过压缩工具和自动清理来减小上下文大小。会话历史记录不会被修改——DCP 会在向 LLM 发送请求之前用占位符替换已剪枝的内容。
 
-### Compress
+### 压缩
 
-Compress is a tool exposed to your model that replaces closed, stale conversation content with high-fidelity technical summaries. You can think of this as a much smarter version of Opencode's compaction process. Instead of triggering statically when your session reaches its maximum context and on the entire coding session, Compress allows the model to pick when to activate based on task completion, and to only compress the specific messages that are no longer needed verbatim.
+Compress 是一个暴露给模型的工具，它会将已关闭的、过时的对话内容替换为高保真度的技术摘要。你可以将其视为 OpenCode 原生合并过程的更智能版本。它不是在你的会话达到最大上下文时才静态触发并对整个编码会话生效，而是允许模型根据任务完成情况自主选择何时激活，并且只压缩那些不再需要逐字保留的特定消息。
 
-DCP supports two compression modes:
+DCP 支持两种压缩模式：
 
-- `range` mode compresses contiguous spans of conversation into one or more summaries.
-- `message` mode (experimental) compresses individual raw messages independently, letting the model manage context much more surgically.
+- `range` 模式将连续的多段对话压缩为一个或多个摘要。
+- `message` 模式（实验性）独立压缩单条原始消息，让模型能够更精细地管理上下文。
 
-In `range` mode, when a new compression overlaps an earlier one, the earlier summary is nested inside the new one so information is preserved through layers of compression rather than diluted away. In both modes, protected tool outputs (such as subagents and skills) and protected file patterns are kept in compression summaries, ensuring that the most important information is never lost. You can also enable `protectUserMessages` to preserve your messages verbatim during compression, though note that large prompts (e.g. copy-pasting log files in the prompt) will then never be compressed away.
+在 `range` 模式下，当新的压缩与先前的压缩重叠时，先前的摘要会被嵌套到新的摘要中，这样信息在多层压缩中得到保留而非被稀释。在两种模式下，受保护的工具输出（如子 agent 和技能）以及受保护的文件模式都会保留在压缩摘要中，确保最重要的信息永不会丢失。你还可以启用 `protectUserMessages` 来在压缩期间保留你的消息原样，但请注意，大型提示（例如在提示中粘贴日志文件）将永远不会被压缩掉。
 
-### Deduplication
+### 去重
 
-Identifies repeated tool calls (same tool, same arguments) and keeps only the most recent output. Recalculated when the compress tool runs, so prompt cache is only impacted alongside compression.
+识别重复的工具调用（相同工具、相同参数），只保留最近一次的输出。在压缩工具运行时重新计算，因此提示缓存仅在与压缩同时发生时受到影响。
 
-### Purge Errors
+### 清除错误
 
-Prunes inputs from errored tool calls after a configurable number of turns (default: 4). Error messages are preserved; only the potentially large input content is removed. Recalculated on compress tool use.
+在可配置的消息轮次后（默认：4 轮），修剪出错工具调用的输入。错误消息会被保留，仅移除可能较大的输入内容。在使用压缩工具时重新计算。
 
-## Configuration
+## 配置
 
-DCP uses its own config file, searched in order:
+DCP 使用自己的配置文件，按以下顺序搜索：
 
-1. Global: `~/.config/opencode/dcp.jsonc` (or `dcp.json`), created automatically on first run
-2. Custom config directory: `$OPENCODE_CONFIG_DIR/dcp.jsonc` (or `dcp.json`), if `OPENCODE_CONFIG_DIR` is set
-3. Project: `.opencode/dcp.jsonc` (or `dcp.json`) in your project's `.opencode` directory
+1. 全局：`~/.config/opencode/dcp.jsonc`（或 `dcp.json`），首次运行时自动创建
+2. 自定义配置目录：`$OPENCODE_CONFIG_DIR/dcp.jsonc`（或 `dcp.json`），如果设置了 `OPENCODE_CONFIG_DIR`
+3. 项目：`.opencode/dcp.jsonc`（或 `dcp.json`），位于项目的 `.opencode` 目录中
 
-Each level overrides the previous, so project settings take priority over global. Restart OpenCode after making config changes.
+每个层级覆盖前一个层级，因此项目设置优先于全局设置。修改配置后请重启 OpenCode。
 
 > [!NOTE]
-> If you use models with smaller context windows, such as GitHub Copilot models or local models, lower `compress.minContextLimit` and `compress.maxContextLimit` in your configuration to match the available context.
+> 如果你使用的是较小上下文窗口的模型，例如 GitHub Copilot 模型或本地模型，请在配置中降低 `compress.minContextLimit` 和 `compress.maxContextLimit` 以匹配可用上下文。
 
 > [!IMPORTANT]
-> Defaults are applied automatically. Expand this if you want to review or override settings.
+> 默认值会自动应用。展开此项可查看或覆盖设置。
 
 <details>
-<summary><strong>Default Configuration</strong> (click to expand)</summary>
+<summary><strong>默认配置</strong>（点击展开）</summary>
 
 ```jsonc
 {
@@ -174,22 +176,22 @@ Each level overrides the previous, so project settings take priority over global
 
 </details>
 
-### Commands
+### 命令
 
-DCP provides a `/dcp` slash command:
+DCP 提供 `/dcp` 斜杠命令：
 
-- `/dcp` — Shows available DCP commands
-- `/dcp context` — Shows a breakdown of your current session's token usage by category (system, user, assistant, tools, etc.) and how much has been saved through pruning.
-- `/dcp stats` — Shows cumulative pruning statistics across all sessions.
-- `/dcp sweep` — Prunes all tools since the last user message. Accepts an optional count: `/dcp sweep 10` prunes the last 10 tools. Respects `commands.protectedTools`.
-- `/dcp manual [on|off]` — Toggle manual mode or set explicit state. When on, the AI will not autonomously use context management tools.
-- `/dcp compress [focus]` — Trigger a single compress tool execution. Optional focus text directs what content to compress, following the active `compress.mode`.
-- `/dcp decompress <n>` — Restore a specific active compression by ID (for example `/dcp decompress 2`). Running without an argument shows available compression IDs, token sizes, and topics.
-- `/dcp recompress <n>` — Re-apply a user-decompressed compression by ID (for example `/dcp recompress 2`). Running without an argument shows recompressible IDs, token sizes, and topics.
+- `/dcp` — 显示可用的 DCP 命令
+- `/dcp context` — 显示当前会话按类别（system、user、assistant、tools 等）划分的 token 使用明细以及通过剪枝节省的量。
+- `/dcp stats` — 显示跨所有会话的累积剪枝统计信息。
+- `/dcp sweep` — 修剪自上次用户消息以来的所有工具。接受可选数量：`/dcp sweep 10` 修剪最后 10 个工具。遵循 `commands.protectedTools`。
+- `/dcp manual [on|off]` — 切换手动模式或设置显式状态。开启时，AI 不会自主使用上下文管理工具。
+- `/dcp compress [focus]` — 触发一次压缩工具执行。可选的 focus 文本指示要压缩的内容，遵循当前的 `compress.mode`。
+- `/dcp decompress <n>` — 按 ID 恢复特定的活跃压缩（例如 `/dcp decompress 2`）。不加参数运行时显示可用的压缩 ID、token 大小和主题。
+- `/dcp recompress <n>` — 按 ID 重新压缩用户已解压的压缩（例如 `/dcp recompress 2`）。不加参数运行时显示可重新压缩的 ID、token 大小和主题。
 
-### Prompt Overrides
+### 提示词覆盖
 
-DCP exposes six editable prompts:
+DCP 暴露了六个可编辑的提示词：
 
 - `system`
 - `compress-range`
@@ -198,52 +200,91 @@ DCP exposes six editable prompts:
 - `turn-nudge`
 - `iteration-nudge`
 
-This feature is disabled by default. Set `experimental.customPrompts` to `true` in your DCP config to activate it.
+此功能默认禁用。在你的 DCP 配置中将 `experimental.customPrompts` 设置为 `true` 来激活它。
 
-When enabled, managed defaults are written to `~/.config/opencode/dcp-prompts/defaults/` as plain-text prompt files. A single `README.md` in that directory explains each prompt and how to create overrides.
+启用后，管理的默认值会以纯文本提示词文件的形式写入 `~/.config/opencode/dcp-prompts/defaults/`。该目录中的 `README.md` 文件会解释每个提示词以及如何创建覆盖。
 
-To customize behavior, add a file with the same name under an overrides directory and edit it as plain text.
+如需自定义行为，请在覆盖目录下添加同名文件并编辑为纯文本。
 
-To reset an override, delete the matching file from your overrides directory.
+要重置覆盖，请从覆盖目录中删除对应的文件。
 
-### Protected Tools
+### 受保护工具
 
-By default, these tools are always protected from pruning:
-`task`, `skill`, `todowrite`, `todoread`, `compress`, `batch`, `plan_enter`, `plan_exit`, `write`, `edit`
+默认情况下，以下工具始终受保护不被修剪：
+`task`、`skill`、`todowrite`、`todoread`、`compress`、`batch`、`plan_enter`、`plan_exit`、`write`、`edit`
 
-The `protectedTools` arrays in `commands` and `strategies` add to this default list.
+`commands` 和 `strategies` 中的 `protectedTools` 数组会追加到这个默认列表。
 
-For the `compress` tool, `compress.protectedTools` ensures specific tool outputs are appended to the compressed summary. By default it includes `task`, `skill`, `todowrite`, and `todoread`.
+对于 `compress` 工具，`compress.protectedTools` 确保特定工具的输出会被附加到压缩摘要中。默认包含 `task`、`skill`、`todowrite` 和 `todoread`。
 
-### External Model Compression (via Environment Variables)
+### 外部模型压缩
 
-To use an external OpenAI-compatible model for generating compression summaries (cheaper than main model):
+将压缩摘要的生成工作卸载到更便宜的模型，而不是使用昂贵的主模型。
+
+#### 优先级链
+
+| 优先级    | 来源     | 说明                                                   |
+| --------- | -------- | ------------------------------------------------------ |
+| 1（最高） | 环境变量 | `OPENCODE_DCP_EXTERNAL_COMPRESS_*`                     |
+| 2         | 项目配置 | `<project>/.opencode/dcp.jsonc:compress.externalModel` |
+| 3         | 全局配置 | `~/.config/opencode/dcp.jsonc:compress.externalModel`  |
+| 4（兜底） | 主模型   | 原始行为不变                                           |
+
+#### 使用方法
+
+**方法 1 — 环境变量（推荐用于快速设置）：**
 
 ```bash
-export OPENCODE_DCP_EXTERNAL_COMPRESS_URL="http://your-proxy/v1"
-export OPENCODE_DCP_EXTERNAL_COMPRESS_KEY="sk-..."
-export OPENCODE_DCP_EXTERNAL_COMPRESS_MODEL="deepseek-v4-flash"
+export OPENCODE_DCP_EXTERNAL_COMPRESS_URL="http://your-proxy-url/v1"
+export OPENCODE_DCP_EXTERNAL_COMPRESS_MODEL="your-model-name"
 # Optional:
-export OPENCODE_DCP_EXTERNAL_COMPRESS_TIMEOUT="120000"  # ms, default 120s
-export OPENCODE_DCP_EXTERNAL_COMPRESS_RETRIES="1"       # default 1
+export OPENCODE_DCP_EXTERNAL_COMPRESS_KEY="your-api-key"
+export OPENCODE_DCP_EXTERNAL_COMPRESS_TIMEOUT="120000"
+export OPENCODE_DCP_EXTERNAL_COMPRESS_RETRIES="1"
 ```
 
-When configured, the `compress` tool's `summary` field becomes optional — if omitted, DCP will automatically call the external model to generate the summary.
+在 shell RC 文件（`~/.zshrc`、`~/.bashrc`）中持久化，以便跨会话自动可用。
 
-## Impact on Prompt Caching
+**方法 2 — 配置文件（`dcp.jsonc`）：**
 
-LLM providers cache prompts based on exact prefix matching. When DCP prunes content, it changes messages, which invalidates cached prefixes from that point forward.
+```jsonc
+{
+    "compress": {
+        "externalModel": {
+            "url": "http://your-proxy-url/v1",
+            "model": "your-model-name",
+            "apiKey": "your-api-key",
+            "timeout": 120000,
+            "retries": 1,
+        },
+    },
+}
+```
 
-**Trade-off:** You lose some cache reads but gain token savings from reduced context size and fewer hallucinations from stale context. In most cases, especially in long sessions, the savings outweigh the cache miss cost.
+#### 行为说明
+
+| 场景                              | 行为                                             |
+| --------------------------------- | ------------------------------------------------ |
+| 配置了外部模型 + 未提供 `summary` | 插件获取范围内容 → 调用外部模型 → 存储生成的摘要 |
+| 配置了外部模型 + 提供了 `summary` | 插件直接使用提供的 `summary`（向后兼容）         |
+| 外部模型调用失败                  | 工具抛出错误；主模型使用回退摘要重试             |
+| 未配置                            | 一切不变——主模型像以前一样编写摘要               |
+| `url` 不兼容 OpenAI               | 外部模型调用失败 → 进入上述错误路径              |
+
+**兼容性：** 仅支持兼容 OpenAI 的 `/chat/completions` 端点（本地代理、OpenAI、DeepSeek 等）。
+
+## 对提示词缓存的影响
+
+LLM 提供商基于精确前缀匹配来缓存提示词。当 DCP 剪枝内容时，它会修改消息，从而从该位置开始使缓存的提示词前缀失效。
+
+**权衡：** 你会损失一些缓存命中，但通过减小上下文尺寸和减少因过时上下文导致的幻觉来获得 token 节省。在大多数情况下，尤其是在长会话中，节省量超过了缓存未命中的成本。
 
 > [!NOTE]
-> In testing, cache hit rates were approximately 85% with DCP vs 90% without.
+> 测试中，使用 DCP 的缓存命中率约为 85%，而未使用时约为 90%。
 
-**No impact for:**
+**无影响的情况：**
 
-- **Request-based billing** — Providers like GitHub Copilot that charge per request, not tokens.
-- **Uniform token pricing** — Providers like Cerebras that bill cached and uncached tokens at the same rate.
+- **按请求计费** — 按请求收费而非按 token 收费的提供商，如 GitHub Copilot。
+- **统一 token 定价** — 对缓存和未缓存 token 按相同费率计费的提供商，如 Cerebras。
 
 ## License
-
-AGPL-3.0-or-later
