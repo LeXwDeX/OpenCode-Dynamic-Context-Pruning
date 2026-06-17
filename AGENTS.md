@@ -44,12 +44,16 @@ Prettier: no semicolons, double quotes, 4-space indent, 100 char width, trailing
 
 ## Publishing
 
+GitHub 推送和 npm 发布**都在本机完成**。本机已 `npm login` 为 `lexwdex-org`，npm 令牌在本机可用。GitHub Actions 无法直接发布到 npm（仓库未配置 `NPM_TOKEN` secret，`.github/workflows/publish.yml` 会因 `ENEEDAUTH` 失败）—— 忽略该 workflow 的失败。
+
 ```bash
-npm version patch          # bumps version + creates git tag v*
-git push fork master --tags  # triggers GitHub Actions → npm publish
+npm version patch            # bumps version + creates git tag v*
+git push origin master --tags  # 推送代码和标签到 GitHub
+npm run build                # 本机构建 dist/
+npm publish --access public  # 本机发布到 npm（已登录 lexwdex-org）
 ```
 
-GitHub Actions workflow `.github/workflows/publish.yml` handles build + publish using `secrets.NPM_TOKEN`.
+发布后用 `npm view @lexwdex-org/opencode-dcp@<version> version` 确认 npm 上能查到。
 
 ## Key Constraints
 
