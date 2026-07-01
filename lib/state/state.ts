@@ -166,6 +166,10 @@ export async function ensureSessionInitialized(
         return
     }
 
+    if (typeof persisted.manualMode === "boolean") {
+        state.manualMode = persisted.manualMode ? "active" : false
+    }
+
     state.prune.tools = loadPruneMap(persisted.prune.tools)
     state.prune.messages = loadPruneMessagesState(persisted.prune.messages)
     state.nudges.contextLimitAnchors = new Set<string>(persisted.nudges.contextLimitAnchors || [])

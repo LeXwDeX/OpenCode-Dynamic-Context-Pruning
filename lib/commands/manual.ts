@@ -11,6 +11,7 @@ import type { Logger } from "../logger"
 import type { SessionState, WithParts } from "../state"
 import type { PluginConfig } from "../config"
 import { sendIgnoredMessage } from "../ui/notification"
+import { saveSessionState } from "../state/persistence"
 import { getCurrentParams } from "../token-utils"
 import { buildCompressedBlockGuidance } from "../prompts/extensions/nudge"
 import { isIgnoredUserMessage } from "../messages/query"
@@ -67,6 +68,8 @@ export async function handleManualToggleCommand(
     } else {
         state.manualMode = state.manualMode ? false : "active"
     }
+
+    await saveSessionState(state, logger)
 
     const params = getCurrentParams(state, messages, logger)
     await sendIgnoredMessage(

@@ -41,6 +41,7 @@ export interface PersistedMessageIdState {
 
 export interface PersistedSessionState {
     sessionName?: string
+    manualMode?: boolean
     prune: PersistedPrune
     nudges: PersistedNudges
     stats: SessionStats
@@ -96,6 +97,7 @@ export async function saveSessionState(
 
         const state: PersistedSessionState = {
             sessionName: sessionName,
+            manualMode: !!sessionState.manualMode,
             prune: {
                 tools: Object.fromEntries(sessionState.prune.tools),
                 messages: serializePruneMessagesState(sessionState.prune.messages),
