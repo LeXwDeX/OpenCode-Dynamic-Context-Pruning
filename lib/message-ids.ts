@@ -135,6 +135,18 @@ export function assignMessageRefs(state: SessionState, messages: WithParts[]): n
             continue
         }
 
+        if (
+            state.lastCompaction > 0 &&
+            message.info.time.created < state.lastCompaction &&
+            !state.messageIds.byRawId.has(rawMessageId)
+        ) {
+            // Pre-compaction messages may still appear in full session history
+            // (e.g. fetched by the compress tool) even though the chat hook's
+            // trimmed view no longer shows them. Skip assigning them a fresh
+            // ref so they don't get sorted out of order against recent refs.
+            continue
+        }
+
         const existingRef = state.messageIds.byRawId.get(rawMessageId)
         if (existingRef) {
             if (state.messageIds.byRef.get(existingRef) !== rawMessageId) {

@@ -89,3 +89,44 @@ test("checkSession garbage-collects stale message id aliases after native compac
     assert.equal(state.messageIds.byRef.get("m0006"), "msg-user-follow-up")
     assert.equal(state.messageIds.nextRef, 7)
 })
+
+test("assignMessageRefs skips pre-compaction messages reintroduced via full session history", async () => {
+    const sessionID = `ses_message_ids_full_history_${Date.now()}`
+    const compactedMessages = buildCompactedMessages(sessionID)
+    const state = createSessionState()
+    const logger = new Logger(false)
+
+    state.sessionId = sessionID
+    await checkSession({} as any, state, logger, compactedMessages, false)
+    assignMessageRefs(state, compactedMessages)
+
+    const preCompactionMessage: WithParts = {
+        info: {
+            id: "msg-before-compaction",
+            role: "user",
+            sessionID,
+            agent: "assistant",
+            model: {
+                providerID: "anthropic",
+                modelID: "claude-test",
+            },
+            time: { created: 1 },
+        } as WithParts["info"],
+        parts: [
+            textPart(
+                "msg-before-compaction",
+                sessionID,
+                "msg-before-compaction-part",
+                "This happened before the compaction summary",
+            ),
+        ],
+    }
+
+    // Simulate the compress tool fetching the full raw session history, which
+    // still includes messages from before the native compaction boundary.
+    const fullHistory = [preCompactionMessage, ...compactedMessages]
+    const assigned = assignMessageRefs(state, fullHistory)
+
+    assert.equal(assigned, 0)
+    assert.equal(state.messageIds.byRawId.has("msg-before-compaction"), false)
+})
