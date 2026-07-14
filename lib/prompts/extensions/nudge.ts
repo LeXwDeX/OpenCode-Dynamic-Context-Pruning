@@ -1,5 +1,6 @@
+import type { PluginConfig } from "../../config"
 import type { SessionState, WithParts } from "../../state"
-import { isIgnoredUserMessage } from "../../messages/query"
+import { isIgnoredUserMessage, isProtectedUserMessage } from "../../messages/query"
 import { isMessageCompacted } from "../../state/utils"
 
 export function buildCompressedBlockGuidance(state: SessionState): string {
@@ -19,11 +20,17 @@ export function buildCompressedBlockGuidance(state: SessionState): string {
 
 export function buildAvailableMessageIdGuidance(
     state: SessionState,
+    config: PluginConfig,
     messages: WithParts[],
 ): string {
     const visibleIds = new Set(
         messages
-            .filter((msg) => !isIgnoredUserMessage(msg) && !isMessageCompacted(state, msg))
+            .filter(
+                (msg) =>
+                    !isIgnoredUserMessage(msg) &&
+                    !isMessageCompacted(state, msg) &&
+                    !isProtectedUserMessage(config, msg),
+            )
             .map((msg) => msg.info.id),
     )
 
@@ -52,7 +59,9 @@ export function buildAvailableMessageIdGuidance(
     return [
         "可用消息边界 ID：",
         `- 当前上下文中可作为 compress 边界的合法消息 ID：${refList}`,
-        "- 只从以上列表中选取 startId 和 endId。不要发明、外推或使用不在列表中的 ID。",
+        config.compress.mode === "message"
+            ? "- 只从以上列表中选取 content[].messageId。不要发明、外推或使用不在列表中的 ID。"
+            : "- 只从以上列表中选取 startId 和 endId。不要发明、外推或使用不在列表中的 ID。",
     ].join("\n")
 }
 

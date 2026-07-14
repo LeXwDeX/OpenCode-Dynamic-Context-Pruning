@@ -340,7 +340,7 @@ export function applyAnchoredNudges(
     const turnNudgeAnchors = collectTurnNudgeAnchors(state, config, messages)
 
     if (config.compress.mode === "message") {
-        const availableMessageIdGuidance = buildAvailableMessageIdGuidance(state, messages)
+        const availableMessageIdGuidance = buildAvailableMessageIdGuidance(state, config, messages)
         applyMessageModeAnchoredNudge(
             state.nudges.contextLimitAnchors,
             messages,
@@ -366,7 +366,7 @@ export function applyAnchoredNudges(
     }
 
     const compressedBlockGuidance = buildCompressedBlockGuidance(state)
-    const availableMessageIdGuidance = buildAvailableMessageIdGuidance(state, messages)
+    const availableMessageIdGuidance = buildAvailableMessageIdGuidance(state, config, messages)
     applyRangeModeAnchoredNudge(
         state.nudges.contextLimitAnchors,
         messages,

@@ -13,7 +13,10 @@ import type { PluginConfig } from "../config"
 import { sendIgnoredMessage } from "../ui/notification"
 import { saveSessionState } from "../state/persistence"
 import { getCurrentParams } from "../token-utils"
-import { buildCompressedBlockGuidance } from "../prompts/extensions/nudge"
+import {
+    buildAvailableMessageIdGuidance,
+    buildCompressedBlockGuidance,
+} from "../prompts/extensions/nudge"
 import { isIgnoredUserMessage } from "../messages/query"
 
 const MANUAL_MODE_ON = "Manual mode is now ON. Use /dcp compress to trigger context tools manually."
@@ -32,13 +35,19 @@ function getTriggerPrompt(
     tool: "compress",
     state: SessionState,
     config: PluginConfig,
+    messages: WithParts[],
     userFocus?: string,
 ): string {
     const base = COMPRESS_TRIGGER_PROMPT
     const compressedBlockGuidance =
         config.compress.mode === "message" ? "" : buildCompressedBlockGuidance(state)
+    const availableMessageIdGuidance = buildAvailableMessageIdGuidance(
+        state,
+        config,
+        messages,
+    )
 
-    const sections = [base, compressedBlockGuidance]
+    const sections = [base, availableMessageIdGuidance, compressedBlockGuidance]
     if (userFocus && userFocus.trim().length > 0) {
         sections.push(`Additional user focus:\n${userFocus.trim()}`)
     }
@@ -88,7 +97,7 @@ export async function handleManualTriggerCommand(
     tool: "compress",
     userFocus?: string,
 ): Promise<string | null> {
-    return getTriggerPrompt(tool, ctx.state, ctx.config, userFocus)
+    return getTriggerPrompt(tool, ctx.state, ctx.config, ctx.messages, userFocus)
 }
 
 export function applyPendingManualTrigger(

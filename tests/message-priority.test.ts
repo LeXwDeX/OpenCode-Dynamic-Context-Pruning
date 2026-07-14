@@ -417,6 +417,8 @@ test("message-mode nudges append to existing text parts and list only earlier vi
     assert.doesNotMatch((injectedNudge as any).text, /m0002/)
     assert.match((injectedNudge as any).text, /可用消息边界 ID：/)
     assert.match((injectedNudge as any).text, /m0001, m0003, m0004/)
+    assert.match((injectedNudge as any).text, /content\[\]\.messageId/)
+    assert.doesNotMatch((injectedNudge as any).text, /startId|endId/)
 })
 
 test("message-mode nudges exclude protected user messages from priority guidance", () => {
