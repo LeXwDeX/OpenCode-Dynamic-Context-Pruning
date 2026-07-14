@@ -40,12 +40,12 @@
     ],
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/LeXwDeX/opencode-dynamic-context-pruning.git"
+        "url": "git+https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning.git"
     },
     "bugs": {
-        "url": "https://github.com/LeXwDeX/opencode-dynamic-context-pruning/issues"
+        "url": "https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues"
     },
-    "homepage": "https://github.com/LeXwDeX/opencode-dynamic-context-pruning#readme",
+    "homepage": "https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning#readme",
     "author": "LeXwDeX",
     "license": "AGPL-3.0-or-later",
     "peerDependencies": {
