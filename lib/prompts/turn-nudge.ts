@@ -1,9 +1,9 @@
 export const TURN_NUDGE = `
-New user turn. This is the moment topic changes are most likely.
+用户开始了新一轮对话，此时最容易发生主题变化。
 
-Is this turn's request a different topic/task from the previous one?
-- New or independent topic: call \`compress\` now to fold the previous topic's finished context into a summary. Its details no longer need verbatim retention.
-- Continuation of the same topic: you may keep it, but still watch for stale accumulation.
+本轮请求是否与上一轮属于不同主题或任务？
+- 新主题或独立任务：现在调用 \`compress\`，把上一主题已经完成的上下文压缩为摘要，不再逐字保留细节。
+- 同一主题的延续：可以保留，但仍需注意过期内容的累积。
 
-Topic change is the clearest, most objective compression trigger — do not miss it.
+主题变化是最明确、最客观的压缩触发条件，不要遗漏。
 `

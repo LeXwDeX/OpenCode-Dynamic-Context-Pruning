@@ -51,6 +51,16 @@ export const deduplicate = (
             continue
         }
 
+        // Errors and in-flight calls are not interchangeable with successful results.
+        // Let purgeErrors handle failures according to its own turn policy.
+        if (
+            metadata.status !== undefined &&
+            metadata.status !== "completed" &&
+            (metadata.status as string) !== "success"
+        ) {
+            continue
+        }
+
         // Skip protected tools
         if (isToolNameProtected(metadata.tool, protectedTools)) {
             continue
@@ -71,7 +81,7 @@ export const deduplicate = (
         }
     }
 
-    // Find duplicates - keep only the most recent (last) in each group
+    // Find successful duplicates - keep only the most recent (last) in each group
     const newPruneIds: string[] = []
 
     for (const [, ids] of signatureMap.entries()) {

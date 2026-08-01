@@ -8,6 +8,7 @@
  */
 
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { SessionState, WithParts } from "../state"
 import type { PluginConfig } from "../config"
 import { sendIgnoredMessage } from "../ui/notification"
@@ -41,11 +42,7 @@ function getTriggerPrompt(
     const base = COMPRESS_TRIGGER_PROMPT
     const compressedBlockGuidance =
         config.compress.mode === "message" ? "" : buildCompressedBlockGuidance(state)
-    const availableMessageIdGuidance = buildAvailableMessageIdGuidance(
-        state,
-        config,
-        messages,
-    )
+    const availableMessageIdGuidance = buildAvailableMessageIdGuidance(state, config, messages)
 
     const sections = [base, availableMessageIdGuidance, compressedBlockGuidance]
     if (userFocus && userFocus.trim().length > 0) {
@@ -56,7 +53,7 @@ function getTriggerPrompt(
 }
 
 export interface ManualCommandContext {
-    client: any
+    client: OpenCodeClient
     state: SessionState
     config: PluginConfig
     logger: Logger

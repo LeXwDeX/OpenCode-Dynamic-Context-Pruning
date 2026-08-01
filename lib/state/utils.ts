@@ -8,6 +8,7 @@ import type {
 import { isIgnoredUserMessage, messageHasCompress } from "../messages/query"
 import { isMessageWithInfo } from "../messages/shape"
 import { countTokens } from "../token-utils"
+import type { OpenCodeClient } from "../opencode-client"
 
 export const isMessageCompacted = (state: SessionState, msg: WithParts): boolean => {
     if (!isMessageWithInfo(msg)) {
@@ -51,7 +52,10 @@ export function serializePruneMessagesState(
     }
 }
 
-export async function isSubAgentSession(client: any, sessionID: string): Promise<boolean> {
+export async function isSubAgentSession(
+    client: OpenCodeClient,
+    sessionID: string,
+): Promise<boolean> {
     try {
         const result = await client.session.get({ path: { id: sessionID } })
         return !!result.data?.parentID
@@ -328,6 +332,42 @@ export function getActiveSummaryTokenUsage(state: SessionState): number {
     return total
 }
 
+const MAX_SUBAGENT_CACHE_ENTRIES = 64
+const MAX_SUBAGENT_CACHE_CHARS = 500_000
+const MAX_SUBAGENT_CACHE_TOTAL_CHARS = 2_000_000
+
+export function getCachedSubAgentResult(state: SessionState, callId: string): string | undefined {
+    const cached = state.subAgentResultCache.get(callId)
+    if (cached === undefined) return undefined
+    state.subAgentResultCache.delete(callId)
+    state.subAgentResultCache.set(callId, cached)
+    return cached
+}
+
+export function cacheSubAgentResult(state: SessionState, callId: string, result: string): string {
+    const cached =
+        result.length <= MAX_SUBAGENT_CACHE_CHARS
+            ? result
+            : result.slice(0, MAX_SUBAGENT_CACHE_CHARS) + "\n[子代理结果因长度限制被截断]"
+    state.subAgentResultCache.delete(callId)
+    state.subAgentResultCache.set(callId, cached)
+
+    let totalChars = Array.from(state.subAgentResultCache.values()).reduce(
+        (total, value) => total + value.length,
+        0,
+    )
+    while (
+        state.subAgentResultCache.size > MAX_SUBAGENT_CACHE_ENTRIES ||
+        totalChars > MAX_SUBAGENT_CACHE_TOTAL_CHARS
+    ) {
+        const oldest = state.subAgentResultCache.keys().next().value
+        if (typeof oldest !== "string") break
+        totalChars -= state.subAgentResultCache.get(oldest)?.length ?? 0
+        state.subAgentResultCache.delete(oldest)
+    }
+    return cached
+}
+
 export function resetOnCompaction(state: SessionState, messages: WithParts[] = []): void {
     state.toolParameters.clear()
 
@@ -336,11 +376,21 @@ export function resetOnCompaction(state: SessionState, messages: WithParts[] = [
     }
 
     const liveMessageIds = new Set(messages.map((msg) => msg.info.id))
+    const liveToolIds = new Set(
+        messages.flatMap((message) =>
+            message.parts.flatMap((part) =>
+                part.type === "tool" && part.callID ? [part.callID] : [],
+            ),
+        ),
+    )
 
     for (const [ref, rawId] of state.messageIds.byRef) {
         if (!liveMessageIds.has(rawId)) {
             state.messageIds.byRef.delete(ref)
             state.messageIds.byRawId.delete(rawId)
         }
+    }
+    for (const callId of state.subAgentResultCache.keys()) {
+        if (!liveToolIds.has(callId)) state.subAgentResultCache.delete(callId)
     }
 }

@@ -160,6 +160,58 @@ test("compress message tool appends non-editable format extension", () => {
     assert.match(tool.description, /仅原始消息 ID：mNNNN/)
 })
 
+test("compress message initializes manual mode before requesting permission", async () => {
+    const sessionID = `ses_message_manual_${Date.now()}`
+    const rawMessages = buildMessages(sessionID)
+    const state = createSessionState()
+    const config = buildConfig()
+    config.manualMode.enabled = true
+    let permissionRequested = false
+    const tool = createCompressMessageTool({
+        client: {
+            session: {
+                messages: async () => ({ data: rawMessages }),
+                get: async () => ({ data: { parentID: null } }),
+            },
+        },
+        state,
+        logger: new Logger(false),
+        config,
+        prompts: {
+            reload() {},
+            getRuntimePrompts() {
+                return { compressMessage: "", compressRange: "" }
+            },
+        },
+    } as any)
+
+    await assert.rejects(
+        tool.execute(
+            {
+                topic: "Blocked automatic compression",
+                content: [
+                    {
+                        messageId: "m0002",
+                        topic: "Blocked note",
+                        summary: "This must not be applied.",
+                    },
+                ],
+            },
+            {
+                ask: async () => {
+                    permissionRequested = true
+                },
+                metadata: () => {},
+                sessionID,
+                messageID: "msg-compress-manual",
+            },
+        ),
+        /Manual mode: compress blocked/,
+    )
+    assert.equal(permissionRequested, false)
+    assert.equal(state.manualMode, "active")
+})
+
 test("compress message mode batches individual message summaries", async () => {
     const sessionID = `ses_message_compress_${Date.now()}`
     const rawMessages = buildMessages(sessionID)

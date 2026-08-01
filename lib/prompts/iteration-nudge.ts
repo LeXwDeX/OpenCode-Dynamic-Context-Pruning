@@ -1,9 +1,9 @@
 export const ITERATION_NUDGE = `
-Many iterations elapsed without new user input.
+在没有新用户输入的情况下已经执行了多轮。
 
-Has the current iteration's task effectively finished, or has its topic drifted away from earlier steps?
-- If earlier steps belong to a resolved problem or a superseded exploration, call \`compress\` now to fold them into a summary.
-- If the iteration still continues the same unfinished goal and early context is still needed, keep it.
+当前任务是否已经完成，或者当前主题是否已经偏离早期步骤？
+- 如果早期步骤属于已经解决的问题或已被替代的探索，现在调用 \`compress\` 将它们压缩为摘要。
+- 如果仍在继续同一个未完成目标，而且还需要早期上下文，则保留这些内容。
 
-Do not let finished exploration directions keep occupying context. Topic drift is the best moment to compress.
+不要让已经结束的探索方向继续占用上下文。主题发生偏移时最适合压缩。
 `

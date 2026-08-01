@@ -8,6 +8,7 @@
  */
 
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { SessionState, WithParts, ToolParameterEntry } from "../state"
 import type { PluginConfig } from "../config"
 import { sendIgnoredMessage } from "../ui/notification"
@@ -25,7 +26,7 @@ import {
 import { syncToolCache } from "../state/tool-cache"
 
 export interface SweepCommandContext {
-    client: any
+    client: OpenCodeClient
     state: SessionState
     config: PluginConfig
     logger: Logger

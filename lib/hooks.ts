@@ -1,4 +1,11 @@
-import type { SessionState, WithParts } from "./state"
+import {
+    initializeSessionState,
+    resolveSessionState,
+    SessionStateStore,
+    type SessionState,
+    type SessionStateTarget,
+    type WithParts,
+} from "./state"
 import type { Logger } from "./logger"
 import type { PluginConfig } from "./config"
 import { assignMessageRefs } from "./message-ids"
@@ -20,6 +27,7 @@ import {
     applyPendingCompressionDurations,
     buildCompressionTimingKey,
     consumeCompressionStart,
+    pruneCompressionTiming,
     resolveCompressionDuration,
 } from "./compress/timing"
 import { filterMessages, filterMessagesInPlace } from "./messages/shape"
@@ -36,8 +44,9 @@ import {
 } from "./commands"
 import { type HostPermissionSnapshot } from "./host-permissions"
 import { compressPermission, syncCompressPermissionState } from "./compress-permission"
-import { checkSession, ensureSessionInitialized, saveSessionState, syncToolCache } from "./state"
+import { checkSession, saveSessionState, syncToolCache } from "./state"
 import { cacheSystemPromptTokens } from "./ui/utils"
+import type { OpenCodeClient } from "./opencode-client"
 
 const INTERNAL_AGENT_SIGNATURES = [
     "You are a title generator",
@@ -47,7 +56,7 @@ const INTERNAL_AGENT_SIGNATURES = [
 ]
 
 export function createSystemPromptHandler(
-    state: SessionState,
+    target: SessionStateTarget,
     logger: Logger,
     config: PluginConfig,
     prompts: PromptStore,
@@ -56,12 +65,18 @@ export function createSystemPromptHandler(
         input: { sessionID?: string; model: { limit: { context: number } } },
         output: { system: string[] },
     ) => {
-        if (input.model?.limit?.context) {
+        const state = input.sessionID
+            ? resolveSessionState(target, input.sessionID)
+            : target instanceof SessionStateStore
+              ? undefined
+              : target
+
+        if (state && input.model?.limit?.context) {
             state.modelContextLimit = input.model.limit.context
             logger.debug("Cached model context limit", { limit: state.modelContextLimit })
         }
 
-        if (state.isSubAgent && !config.experimental.allowSubAgents) {
+        if (state?.isSubAgent && !config.experimental.allowSubAgents) {
             return
         }
 
@@ -72,7 +87,7 @@ export function createSystemPromptHandler(
         }
 
         const effectivePermission =
-            input.sessionID && state.sessionId === input.sessionID
+            input.sessionID && state?.sessionId === input.sessionID
                 ? compressPermission(state, config)
                 : config.compress.permission
 
@@ -85,8 +100,8 @@ export function createSystemPromptHandler(
         const newPrompt = renderSystemPrompt(
             runtimePrompts,
             buildProtectedToolsExtension(config.compress.protectedTools),
-            !!state.manualMode,
-            state.isSubAgent && config.experimental.allowSubAgents,
+            !!state?.manualMode,
+            !!state?.isSubAgent && config.experimental.allowSubAgents,
         )
         if (output.system.length > 0) {
             output.system[output.system.length - 1] += "\n\n" + newPrompt
@@ -97,8 +112,8 @@ export function createSystemPromptHandler(
 }
 
 export function createChatMessageTransformHandler(
-    client: any,
-    state: SessionState,
+    client: OpenCodeClient,
+    target: SessionStateTarget,
     logger: Logger,
     config: PluginConfig,
     prompts: PromptStore,
@@ -114,7 +129,14 @@ export function createChatMessageTransformHandler(
             })
         }
 
-        await checkSession(client, state, logger, output.messages, config.manualMode.enabled)
+        const state = await checkSession(
+            client,
+            target,
+            logger,
+            output.messages,
+            config.manualMode.enabled,
+        )
+        if (!state) return
 
         syncCompressPermissionState(state, config, hostPermissions, output.messages)
 
@@ -167,8 +189,8 @@ export function createChatMessageTransformHandler(
 }
 
 export function createCommandExecuteHandler(
-    client: any,
-    state: SessionState,
+    client: OpenCodeClient,
+    target: SessionStateTarget,
     logger: Logger,
     config: PluginConfig,
     workingDirectory: string,
@@ -188,9 +210,9 @@ export function createCommandExecuteHandler(
             })
             const messages = filterMessages(messagesResponse.data || messagesResponse)
 
-            await ensureSessionInitialized(
+            const state = await initializeSessionState(
                 client,
-                state,
+                target,
                 input.sessionID,
                 logger,
                 messages,
@@ -293,7 +315,7 @@ export function createTextCompleteHandler() {
     }
 }
 
-export function createEventHandler(state: SessionState, logger: Logger) {
+export function createEventHandler(target: SessionStateTarget, logger: Logger) {
     return async (input: { event: any }) => {
         const eventTime =
             typeof input.event?.time === "number" && Number.isFinite(input.event.time)
@@ -312,17 +334,35 @@ export function createEventHandler(state: SessionState, logger: Logger) {
             return
         }
 
+        if (typeof part.callID !== "string" || typeof part.messageID !== "string") {
+            return
+        }
+
+        const eventSessionId =
+            typeof input.event.properties?.sessionID === "string"
+                ? input.event.properties.sessionID
+                : typeof part.sessionID === "string"
+                  ? part.sessionID
+                  : undefined
+        const state =
+            target instanceof SessionStateStore
+                ? target.resolveEventState(eventSessionId, part.messageID)
+                : target
+        const key = buildCompressionTimingKey(part.messageID, part.callID)
+        if (state) pruneCompressionTiming(state)
+
         if (part.state.status === "pending") {
-            if (typeof part.callID !== "string" || typeof part.messageID !== "string") {
+            const startedAt = eventTime ?? Date.now()
+            if (!state && target instanceof SessionStateStore) {
+                target.recordOrphanStart(key, startedAt)
                 return
             }
-
-            const startedAt = eventTime ?? Date.now()
-            const key = buildCompressionTimingKey(part.messageID, part.callID)
+            if (!state) return
             if (state.compressionTiming.startsByCallId.has(key)) {
                 return
             }
             state.compressionTiming.startsByCallId.set(key, startedAt)
+            state.compressionTiming.recordedAtByCallId.set(key, Date.now())
             logger.debug("Recorded compression start", {
                 messageID: part.messageID,
                 callID: part.callID,
@@ -332,22 +372,31 @@ export function createEventHandler(state: SessionState, logger: Logger) {
         }
 
         if (part.state.status === "completed") {
-            if (typeof part.callID !== "string" || typeof part.messageID !== "string") {
-                return
-            }
-
-            const key = buildCompressionTimingKey(part.messageID, part.callID)
-            const start = consumeCompressionStart(state, part.messageID, part.callID)
+            const start = state
+                ? consumeCompressionStart(state, part.messageID, part.callID)
+                : target instanceof SessionStateStore
+                  ? target.consumeOrphanStart(key)
+                  : undefined
             const durationMs = resolveCompressionDuration(start, eventTime, part.state.time)
             if (typeof durationMs !== "number") {
                 return
             }
 
+            if (!state && target instanceof SessionStateStore) {
+                target.recordOrphanPending(key, {
+                    messageId: part.messageID,
+                    callId: part.callID,
+                    durationMs,
+                })
+                return
+            }
+            if (!state) return
             state.compressionTiming.pendingByCallId.set(key, {
                 messageId: part.messageID,
                 callId: part.callID,
                 durationMs,
             })
+            state.compressionTiming.recordedAtByCallId.set(key, Date.now())
 
             const updates = applyPendingCompressionDurations(state)
             if (updates === 0) {
@@ -369,10 +418,13 @@ export function createEventHandler(state: SessionState, logger: Logger) {
             return
         }
 
-        if (typeof part.callID === "string" && typeof part.messageID === "string") {
+        if (state) {
             state.compressionTiming.startsByCallId.delete(
                 buildCompressionTimingKey(part.messageID, part.callID),
             )
+            state.compressionTiming.recordedAtByCallId.delete(key)
+        } else if (target instanceof SessionStateStore) {
+            target.deleteOrphanStart(key)
         }
     }
 }

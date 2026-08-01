@@ -66,8 +66,8 @@ DCP 使用自己的配置文件，按以下顺序搜索：
     "$schema": "https://raw.githubusercontent.com/LeXwDeX/opencode-dynamic-context-pruning/master/dcp.schema.json",
     // Enable or disable the plugin
     "enabled": true,
-    // Automatically update npm-installed DCP when a newer npm latest is available.
-    // Version-locked plugin specs are not updated.
+    // Check npm for a newer DCP release and show an update notification.
+    // The plugin never deletes or replaces its active installation.
     "autoUpdate": true,
     // Enable debug logging to ~/.config/opencode/logs/dcp/
     "debug": false,

@@ -326,6 +326,7 @@ export class PromptStore {
     private readonly paths: PromptPaths
     private readonly customPromptsEnabled: boolean
     private runtimePrompts: RuntimePrompts
+    private lastReloadAt = 0
 
     constructor(logger: Logger, workingDirectory: string, customPromptsEnabled = false) {
         this.logger = logger
@@ -344,6 +345,10 @@ export class PromptStore {
     }
 
     reload(): void {
+        const now = Date.now()
+        if (now - this.lastReloadAt < 1000) return
+        this.lastReloadAt = now
+
         const nextPrompts = createBundledRuntimePrompts()
 
         if (!this.customPromptsEnabled) {

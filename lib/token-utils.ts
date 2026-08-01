@@ -1,5 +1,5 @@
 import { SessionState, WithParts } from "./state"
-import { AssistantMessage, UserMessage } from "@opencode-ai/sdk/v2"
+import { AssistantMessage, UserMessage } from "@opencode-ai/sdk"
 import { Logger } from "./logger"
 import * as _anthropicTokenizer from "@anthropic-ai/tokenizer"
 const anthropicCountTokens = (_anthropicTokenizer.countTokens ??
@@ -7,6 +7,9 @@ const anthropicCountTokens = (_anthropicTokenizer.countTokens ??
 import { getLastUserMessage } from "./messages/query"
 
 export function getCurrentTokenUsage(state: SessionState, messages: WithParts[]): number {
+    let reportedTokens = 0
+    let lastReportedIndex = -1
+
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i]
         if (msg.info.role !== "assistant") {
@@ -23,7 +26,8 @@ export function getCurrentTokenUsage(state: SessionState, messages: WithParts[])
             (msg.info.time.created < state.lastCompaction ||
                 (msg.info.summary === true && msg.info.time.created === state.lastCompaction))
         ) {
-            return 0
+            lastReportedIndex = i
+            break
         }
 
         const input = assistantInfo.tokens?.input || 0
@@ -31,10 +35,17 @@ export function getCurrentTokenUsage(state: SessionState, messages: WithParts[])
         const reasoning = assistantInfo.tokens?.reasoning || 0
         const cacheRead = assistantInfo.tokens?.cache?.read || 0
         const cacheWrite = assistantInfo.tokens?.cache?.write || 0
-        return input + output + reasoning + cacheRead + cacheWrite
+        reportedTokens = input + output + reasoning + cacheRead + cacheWrite
+        lastReportedIndex = i
+        break
     }
 
-    return 0
+    let unreportedTokens = 0
+    for (let i = lastReportedIndex + 1; i < messages.length; i++) {
+        unreportedTokens += countAllMessageTokens(messages[i])
+    }
+
+    return reportedTokens + unreportedTokens
 }
 
 export function getCurrentParams(
@@ -45,7 +56,6 @@ export function getCurrentParams(
     providerId: string | undefined
     modelId: string | undefined
     agent: string | undefined
-    variant: string | undefined
 } {
     const userMsg = getLastUserMessage(messages)
     if (!userMsg) {
@@ -54,16 +64,14 @@ export function getCurrentParams(
             providerId: undefined,
             modelId: undefined,
             agent: undefined,
-            variant: undefined,
         }
     }
     const userInfo = userMsg.info as UserMessage
     const agent: string = userInfo.agent
     const providerId: string | undefined = userInfo.model.providerID
     const modelId: string | undefined = userInfo.model.modelID
-    const variant: string | undefined = userInfo.model.variant
 
-    return { providerId, modelId, agent, variant }
+    return { providerId, modelId, agent }
 }
 
 export function countTokens(text: string): number {
@@ -125,7 +133,10 @@ export function extractToolContent(part: any): string[] {
 
 export function countToolTokens(part: any): number {
     const contents = extractToolContent(part)
-    return estimateTokensBatch(contents)
+    if (contents.length === 0) return 0
+    // Tool-cache synchronization is a hot path and can process hundreds of old
+    // results. A byte-based estimate avoids invoking the tokenizer once per tool.
+    return Math.ceil(Buffer.byteLength(contents.join(" "), "utf-8") / 4)
 }
 
 export function getTotalToolTokens(state: SessionState, toolIds: string[]): number {

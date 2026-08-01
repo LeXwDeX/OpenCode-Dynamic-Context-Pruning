@@ -90,6 +90,17 @@ test("checkSession garbage-collects stale message id aliases after native compac
     assert.equal(state.messageIds.nextRef, 7)
 })
 
+test("assignMessageRefs reuses free aliases after the counter reaches m9999", () => {
+    const state = createSessionState()
+    state.messageIds.nextRef = 10000
+    const messages = buildCompactedMessages("ses_message_ids_wrap")
+
+    assert.equal(assignMessageRefs(state, messages), 2)
+    assert.equal(state.messageIds.byRawId.get("msg-assistant-summary"), "m0001")
+    assert.equal(state.messageIds.byRawId.get("msg-user-follow-up"), "m0002")
+    assert.equal(state.messageIds.nextRef, 3)
+})
+
 test("assignMessageRefs skips pre-compaction messages reintroduced via full session history", async () => {
     const sessionID = `ses_message_ids_full_history_${Date.now()}`
     const compactedMessages = buildCompactedMessages(sessionID)

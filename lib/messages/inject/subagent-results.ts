@@ -7,8 +7,14 @@ import {
     mergeSubagentResult,
 } from "../../subagents/subagent-results"
 import { stripHallucinationsFromString } from "../utils"
+import { runWithConcurrency } from "../../concurrency"
+import { cacheSubAgentResult, getCachedSubAgentResult } from "../../state/utils"
+import type { OpenCodeClient } from "../../opencode-client"
 
-async function fetchSubAgentMessages(client: any, sessionId: string): Promise<WithParts[]> {
+async function fetchSubAgentMessages(
+    client: OpenCodeClient,
+    sessionId: string,
+): Promise<WithParts[]> {
     const response = await client.session.messages({
         path: { id: sessionId },
     })
@@ -17,7 +23,7 @@ async function fetchSubAgentMessages(client: any, sessionId: string): Promise<Wi
 }
 
 export const injectExtendedSubAgentResults = async (
-    client: any,
+    client: OpenCodeClient,
     state: SessionState,
     logger: Logger,
     messages: WithParts[],
@@ -27,6 +33,10 @@ export const injectExtendedSubAgentResults = async (
         return
     }
 
+    type CompletedToolPart = Extract<WithParts["parts"][number], { type: "tool" }> & {
+        state: { status: "completed"; output: string }
+    }
+    const tasks: Array<{ part: CompletedToolPart }> = []
     for (const message of messages) {
         const parts = Array.isArray(message.parts) ? message.parts : []
 
@@ -41,42 +51,46 @@ export const injectExtendedSubAgentResults = async (
                 continue
             }
 
-            const cachedResult = state.subAgentResultCache.get(part.callID)
-            if (cachedResult !== undefined) {
-                if (cachedResult) {
-                    part.state.output = stripHallucinationsFromString(
-                        mergeSubagentResult(part.state.output, cachedResult),
-                    )
-                }
-                continue
-            }
-
-            const subAgentSessionId = getSubAgentId(part)
-            if (!subAgentSessionId) {
-                continue
-            }
-
-            let subAgentMessages: WithParts[] = []
-            try {
-                subAgentMessages = await fetchSubAgentMessages(client, subAgentSessionId)
-            } catch (error) {
-                logger.warn("Failed to fetch subagent session for output expansion", {
-                    subAgentSessionId,
-                    callID: part.callID,
-                    error: error instanceof Error ? error.message : String(error),
-                })
-                continue
-            }
-
-            const subAgentResultText = buildSubagentResultText(subAgentMessages)
-            if (!subAgentResultText) {
-                continue
-            }
-
-            state.subAgentResultCache.set(part.callID, subAgentResultText)
-            part.state.output = stripHallucinationsFromString(
-                mergeSubagentResult(part.state.output, subAgentResultText),
-            )
+            tasks.push({ part: part as CompletedToolPart })
         }
     }
+
+    await runWithConcurrency(tasks, 4, async ({ part }) => {
+        const cachedResult = getCachedSubAgentResult(state, part.callID)
+        if (cachedResult !== undefined) {
+            if (cachedResult) {
+                part.state.output = stripHallucinationsFromString(
+                    mergeSubagentResult(part.state.output, cachedResult),
+                )
+            }
+            return
+        }
+
+        const subAgentSessionId = getSubAgentId(part)
+        if (!subAgentSessionId) {
+            return
+        }
+
+        let subAgentMessages: WithParts[] = []
+        try {
+            subAgentMessages = await fetchSubAgentMessages(client, subAgentSessionId)
+        } catch (error) {
+            logger.warn("Failed to fetch subagent session for output expansion", {
+                subAgentSessionId,
+                callID: part.callID,
+                error: error instanceof Error ? error.message : String(error),
+            })
+            return
+        }
+
+        const subAgentResultText = buildSubagentResultText(subAgentMessages)
+        if (!subAgentResultText) {
+            return
+        }
+
+        const cached = cacheSubAgentResult(state, part.callID, subAgentResultText)
+        part.state.output = stripHallucinationsFromString(
+            mergeSubagentResult(part.state.output, cached),
+        )
+    })
 }

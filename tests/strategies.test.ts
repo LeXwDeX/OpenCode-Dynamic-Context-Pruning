@@ -123,6 +123,34 @@ test("deduplicate prunes duplicate tool calls keeping the most recent", () => {
     assert.ok(!state.prune.tools.has("call3"))
 })
 
+test("deduplicate keeps a successful result when a newer identical call errors", () => {
+    const state = createSessionState()
+    const logger = new Logger(false)
+    const config = buildConfig()
+
+    state.toolIdList = ["call-success", "call-error"]
+    state.toolParameters.set("call-success", {
+        tool: "read",
+        parameters: { filePath: "src/index.ts" },
+        turn: 1,
+        status: "completed",
+        tokenCount: 50,
+    })
+    state.toolParameters.set("call-error", {
+        tool: "read",
+        parameters: { filePath: "src/index.ts" },
+        turn: 2,
+        status: "error",
+        error: "temporary read failure",
+        tokenCount: 10,
+    })
+
+    deduplicate(state, logger, config, buildMessages())
+
+    assert.equal(state.prune.tools.has("call-success"), false)
+    assert.equal(state.prune.tools.has("call-error"), false)
+})
+
 test("deduplicate skips protected tools", () => {
     const state = createSessionState()
     const logger = new Logger(false)

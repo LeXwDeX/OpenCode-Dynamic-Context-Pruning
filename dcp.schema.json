@@ -18,7 +18,7 @@
         "autoUpdate": {
             "type": "boolean",
             "default": true,
-            "description": "Automatically update npm-installed DCP when a newer npm latest version is available. Version-locked plugin specs are not updated."
+            "description": "Check npm for newer DCP releases and show a non-destructive update notification. Version-locked plugin specs are not notified."
         },
         "debug": {
             "type": "boolean",
@@ -52,13 +52,35 @@
                     "items": {
                         "type": "string"
                     },
-                    "default": [],
+                    "default": [
+                        "task",
+                        "skill",
+                        "todowrite",
+                        "todoread",
+                        "compress",
+                        "batch",
+                        "plan_enter",
+                        "plan_exit",
+                        "write",
+                        "edit"
+                    ],
                     "description": "Additional tool names or wildcard patterns to protect from pruning via commands (e.g., /dcp sweep). Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
                 }
             },
             "default": {
                 "enabled": true,
-                "protectedTools": []
+                "protectedTools": [
+                    "task",
+                    "skill",
+                    "todowrite",
+                    "todoread",
+                    "compress",
+                    "batch",
+                    "plan_enter",
+                    "plan_exit",
+                    "write",
+                    "edit"
+                ]
             }
         },
         "manualMode": {
@@ -234,7 +256,7 @@
                     "items": {
                         "type": "string"
                     },
-                    "default": [],
+                    "default": ["task", "skill", "todowrite", "todoread"],
                     "description": "Tool names or wildcard patterns whose completed outputs should be appended to the compression summary. Supports glob wildcards: * matches any characters, ? matches a single character (e.g., \"mcp_*\", \"my_tool_?\")"
                 },
                 "protectTags": {
@@ -246,6 +268,40 @@
                     "type": "boolean",
                     "default": false,
                     "description": "When enabled, your messages are never lost during compression"
+                },
+                "externalModel": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["url", "model"],
+                    "description": "OpenAI-compatible model used to generate compression summaries",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Base URL or /chat/completions endpoint"
+                        },
+                        "model": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Model name sent to the external endpoint"
+                        },
+                        "apiKey": {
+                            "type": "string",
+                            "description": "Optional bearer token"
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "exclusiveMinimum": 0,
+                            "default": 120000,
+                            "description": "Request timeout in milliseconds"
+                        },
+                        "retries": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "default": 1,
+                            "description": "Retries after the initial request"
+                        }
+                    }
                 }
             },
             "default": {
@@ -258,7 +314,7 @@
                 "nudgeFrequency": 2,
                 "iterationNudgeThreshold": 15,
                 "nudgeForce": "strong",
-                "protectedTools": [],
+                "protectedTools": ["task", "skill", "todowrite", "todoread"],
                 "protectTags": false,
                 "protectUserMessages": false
             }

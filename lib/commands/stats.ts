@@ -4,6 +4,7 @@
  */
 
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { SessionState, WithParts } from "../state"
 import { sendIgnoredMessage } from "../ui/notification"
 import { formatTokenCount } from "../ui/utils"
@@ -12,7 +13,7 @@ import { getCurrentParams } from "../token-utils"
 import { getActiveCompressionTargets } from "./compression-targets"
 
 export interface StatsCommandContext {
-    client: any
+    client: OpenCodeClient
     state: SessionState
     logger: Logger
     sessionId: string

@@ -6,11 +6,13 @@
 
 import * as fs from "fs/promises"
 import { existsSync } from "fs"
+import { randomUUID } from "crypto"
 import { homedir } from "os"
 import { join } from "path"
 import type { CompressionBlock, PrunedMessageEntry, SessionState, SessionStats } from "./types"
 import type { Logger } from "../logger"
 import { serializePruneMessagesState } from "./utils"
+import { runWithConcurrency } from "../concurrency"
 
 /** Prune state as stored on disk */
 export interface PersistedPruneMessagesState {
@@ -50,22 +52,27 @@ export interface PersistedSessionState {
     messageIds?: PersistedMessageIdState
 }
 
-const STORAGE_DIR = join(
-    process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
-    "opencode",
-    "storage",
-    "plugin",
-    "dcp",
-)
+const saveQueues = new Map<string, Promise<void>>()
+
+function getStorageDir(): string {
+    return join(
+        process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"),
+        "opencode",
+        "storage",
+        "plugin",
+        "dcp",
+    )
+}
 
 async function ensureStorageDir(): Promise<void> {
-    if (!existsSync(STORAGE_DIR)) {
-        await fs.mkdir(STORAGE_DIR, { recursive: true })
+    const storageDir = getStorageDir()
+    if (!existsSync(storageDir)) {
+        await fs.mkdir(storageDir, { recursive: true })
     }
 }
 
 function getSessionFilePath(sessionId: string): string {
-    return join(STORAGE_DIR, `${sessionId}.json`)
+    return join(getStorageDir(), `${sessionId}.json`)
 }
 
 async function writePersistedSessionState(
@@ -76,8 +83,15 @@ async function writePersistedSessionState(
     await ensureStorageDir()
 
     const filePath = getSessionFilePath(sessionId)
+    const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
     const content = JSON.stringify(state, null, 2)
-    await fs.writeFile(filePath, content, "utf-8")
+    try {
+        await fs.writeFile(temporaryPath, content, "utf-8")
+        await fs.rename(temporaryPath, filePath)
+    } catch (error) {
+        await fs.unlink(temporaryPath).catch(() => undefined)
+        throw error
+    }
 
     logger.info("Saved session state to disk", {
         sessionId,
@@ -90,39 +104,50 @@ export async function saveSessionState(
     logger: Logger,
     sessionName?: string,
 ): Promise<void> {
+    if (!sessionState.sessionId) {
+        return
+    }
+
+    const sessionId = sessionState.sessionId
+    const state: PersistedSessionState = {
+        sessionName: sessionName,
+        manualMode: !!sessionState.manualMode,
+        prune: {
+            tools: Object.fromEntries(sessionState.prune.tools),
+            messages: serializePruneMessagesState(sessionState.prune.messages),
+        },
+        nudges: {
+            contextLimitAnchors: Array.from(sessionState.nudges.contextLimitAnchors),
+            turnNudgeAnchors: Array.from(sessionState.nudges.turnNudgeAnchors),
+            iterationNudgeAnchors: Array.from(sessionState.nudges.iterationNudgeAnchors),
+        },
+        stats: { ...sessionState.stats },
+        lastUpdated: new Date().toISOString(),
+        lastCompaction: sessionState.lastCompaction,
+        messageIds: {
+            byRawId: Object.fromEntries(sessionState.messageIds.byRawId),
+            byRef: Object.fromEntries(sessionState.messageIds.byRef),
+            nextRef: sessionState.messageIds.nextRef,
+        },
+    }
+    const previous = saveQueues.get(sessionId) ?? Promise.resolve()
+    const current = previous
+        .catch(() => undefined)
+        .then(() => writePersistedSessionState(sessionId, state, logger))
+    saveQueues.set(sessionId, current)
+
     try {
-        if (!sessionState.sessionId) {
-            return
-        }
-
-        const state: PersistedSessionState = {
-            sessionName: sessionName,
-            manualMode: !!sessionState.manualMode,
-            prune: {
-                tools: Object.fromEntries(sessionState.prune.tools),
-                messages: serializePruneMessagesState(sessionState.prune.messages),
-            },
-            nudges: {
-                contextLimitAnchors: Array.from(sessionState.nudges.contextLimitAnchors),
-                turnNudgeAnchors: Array.from(sessionState.nudges.turnNudgeAnchors),
-                iterationNudgeAnchors: Array.from(sessionState.nudges.iterationNudgeAnchors),
-            },
-            stats: sessionState.stats,
-            lastUpdated: new Date().toISOString(),
-            lastCompaction: sessionState.lastCompaction,
-            messageIds: {
-                byRawId: Object.fromEntries(sessionState.messageIds.byRawId),
-                byRef: Object.fromEntries(sessionState.messageIds.byRef),
-                nextRef: sessionState.messageIds.nextRef,
-            },
-        }
-
-        await writePersistedSessionState(sessionState.sessionId, state, logger)
+        await current
     } catch (error: any) {
         logger.error("Failed to save session state", {
-            sessionId: sessionState.sessionId,
+            sessionId,
             error: error?.message,
         })
+        throw error
+    } finally {
+        if (saveQueues.get(sessionId) === current) {
+            saveQueues.delete(sessionId)
+        }
     }
 }
 
@@ -235,16 +260,17 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
     }
 
     try {
-        if (!existsSync(STORAGE_DIR)) {
+        const storageDir = getStorageDir()
+        if (!existsSync(storageDir)) {
             return result
         }
 
-        const files = await fs.readdir(STORAGE_DIR)
+        const files = await fs.readdir(storageDir)
         const jsonFiles = files.filter((f) => f.endsWith(".json"))
 
-        for (const file of jsonFiles) {
+        await runWithConcurrency(jsonFiles, 16, async (file) => {
             try {
-                const filePath = join(STORAGE_DIR, file)
+                const filePath = join(storageDir, file)
                 const content = await fs.readFile(filePath, "utf-8")
                 const state = JSON.parse(content) as PersistedSessionState
 
@@ -261,7 +287,7 @@ export async function loadAllSessionStats(logger: Logger): Promise<AggregatedSta
             } catch {
                 // Skip invalid files
             }
-        }
+        })
 
         logger.debug("Loaded all-time stats", result)
     } catch (error: any) {

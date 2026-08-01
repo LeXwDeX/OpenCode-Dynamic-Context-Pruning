@@ -4,7 +4,7 @@ import type { PluginConfig } from "../config"
 import { isMessageCompacted } from "../state/utils"
 import { createSyntheticUserMessage, replaceBlockIdsWithBlocked } from "./utils"
 import { getLastUserMessage } from "./query"
-import type { UserMessage } from "@opencode-ai/sdk/v2"
+import type { UserMessage } from "@opencode-ai/sdk"
 
 const PRUNED_TOOL_OUTPUT_REPLACEMENT =
     "[Output removed to save context - information superseded or no longer needed]"
@@ -171,7 +171,8 @@ const filterCompressedRanges = (
 
     const result: WithParts[] = []
 
-    for (const msg of messages) {
+    for (let msgIndex = 0; msgIndex < messages.length; msgIndex++) {
+        const msg = messages[msgIndex]
         const msgId = msg.info.id
 
         // Check if there's a summary to inject at this anchor point
@@ -191,7 +192,6 @@ const filterCompressedRanges = (
                 })
             } else {
                 // Find user message for variant and as base for synthetic message
-                const msgIndex = messages.indexOf(msg)
                 const userMessage = getLastUserMessage(messages, msgIndex)
 
                 if (userMessage) {

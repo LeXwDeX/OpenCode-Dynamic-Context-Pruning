@@ -37,7 +37,10 @@ function buildToolPart(tool: string, state: Record<string, any>) {
 
 function assertCounted(part: Record<string, any>, expectedContents: string[]) {
     assert.deepEqual(extractToolContent(part), expectedContents)
-    assert.equal(countToolTokens(part), estimateTokensBatch(expectedContents))
+    assert.equal(
+        countToolTokens(part),
+        Math.ceil(Buffer.byteLength(expectedContents.join(" "), "utf-8") / 4),
+    )
     assert.equal(
         countAllMessageTokens(buildToolMessage(part)),
         estimateTokensBatch(expectedContents),

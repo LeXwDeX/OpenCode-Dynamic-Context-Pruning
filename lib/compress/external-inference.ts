@@ -107,6 +107,21 @@ export async function generateSummaryViaExternal(
     cfg: ExternalModelConfig,
     req: ExternalSummaryRequest,
 ): Promise<string> {
+    if (typeof cfg.url !== "string" || cfg.url.trim().length === 0) {
+        throw new Error("外部压缩模型 url 必须是非空字符串")
+    }
+    if (typeof cfg.model !== "string" || cfg.model.trim().length === 0) {
+        throw new Error("外部压缩模型 model 必须是非空字符串")
+    }
+    if (cfg.apiKey !== undefined && typeof cfg.apiKey !== "string") {
+        throw new Error("外部压缩模型 apiKey 必须是字符串")
+    }
+    if (cfg.timeout !== undefined && (!Number.isFinite(cfg.timeout) || cfg.timeout <= 0)) {
+        throw new Error("外部压缩模型 timeout 必须是正数")
+    }
+    if (cfg.retries !== undefined && (!Number.isInteger(cfg.retries) || cfg.retries < 0)) {
+        throw new Error("外部压缩模型 retries 必须是非负整数")
+    }
     const endpoint = resolveCompressBaseUrl(cfg.url)
     const maxRetries = cfg.retries ?? 1
 

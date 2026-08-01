@@ -7,7 +7,7 @@ import {
     renderMessagePriorityGuidance,
 } from "../../prompts/extensions/nudge"
 import type { RuntimePrompts } from "../../prompts/store"
-import type { UserMessage } from "@opencode-ai/sdk/v2"
+import type { UserMessage } from "@opencode-ai/sdk"
 import {
     type CompressionPriorityMap,
     type MessagePriority,
@@ -35,12 +35,14 @@ export interface LastNonIgnoredMessage {
     index: number
 }
 
-export function getNudgeFrequency(_config: PluginConfig): number {
-    return 1
+export function getNudgeFrequency(config: PluginConfig): number {
+    const value = config.compress.nudgeFrequency
+    return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1
 }
 
-export function getIterationNudgeThreshold(_config: PluginConfig): number {
-    return 1
+export function getIterationNudgeThreshold(config: PluginConfig): number {
+    const value = config.compress.iterationNudgeThreshold
+    return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1
 }
 
 export function findLastNonIgnoredMessage(messages: WithParts[]): LastNonIgnoredMessage | null {

@@ -1,4 +1,5 @@
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { CompressionBlock, PruneMessagesState, SessionState, WithParts } from "../state"
 import { syncCompressionBlocks } from "../messages"
 import { parseBlockRef } from "../message-ids"
@@ -13,7 +14,7 @@ import {
 } from "./compression-targets"
 
 export interface DecompressCommandContext {
-    client: any
+    client: OpenCodeClient
     state: SessionState
     logger: Logger
     sessionId: string

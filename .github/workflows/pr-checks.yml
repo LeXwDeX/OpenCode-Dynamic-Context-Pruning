@@ -3,6 +3,8 @@ name: PR Checks
 on:
     pull_request:
         branches: [master, dev]
+    push:
+        branches: [master]
 
 jobs:
     validate:
@@ -28,9 +30,42 @@ jobs:
             - name: Type check
               run: npm run typecheck
 
+            - name: Test
+              run: npm test
+
             - name: Build
               run: npm run build
 
             - name: Security audit
               run: npm audit --audit-level=high
               continue-on-error: false
+
+    opencode-compatibility:
+        name: OpenCode ${{ matrix.opencode }} compatibility
+        runs-on: ubuntu-latest
+        strategy:
+            fail-fast: false
+            matrix:
+                opencode: ["1.4.3", "latest"]
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: "24"
+                  cache: "npm"
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Install OpenCode compatibility target
+              run: npm install --no-save --package-lock=false "@opencode-ai/plugin@${{ matrix.opencode }}" "@opencode-ai/sdk@${{ matrix.opencode }}"
+
+            - name: Type check
+              run: npm run typecheck
+
+            - name: Build and import plugin
+              run: npm run build && node -e "import('./dist/index.js')"

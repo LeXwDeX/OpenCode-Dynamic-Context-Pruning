@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs"
 import { join, dirname } from "path"
 import { homedir } from "os"
-import { parse } from "jsonc-parser/lib/esm/main.js"
+import * as jsoncParser from "jsonc-parser"
 import type { PluginInput } from "@opencode-ai/plugin"
 import { applyExternalModelEnvOverride } from "./config-env-override"
 
@@ -105,7 +105,6 @@ export const VALID_CONFIG_KEYS = new Set([
     "enabled",
     "autoUpdate",
     "debug",
-    "showUpdateToasts",
     "pruneNotification",
     "pruneNotificationType",
     "turnProtection",
@@ -137,6 +136,11 @@ export const VALID_CONFIG_KEYS = new Set([
     "compress.protectTags",
     "compress.protectUserMessages",
     "compress.externalModel",
+    "compress.externalModel.url",
+    "compress.externalModel.model",
+    "compress.externalModel.apiKey",
+    "compress.externalModel.timeout",
+    "compress.externalModel.retries",
     "strategies",
     "strategies.deduplication",
     "strategies.deduplication.enabled",
@@ -551,12 +555,57 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                             expected: "string",
                             actual: typeof compress.externalModel.url,
                         })
+                    } else if (compress.externalModel.url.trim().length === 0) {
+                        errors.push({
+                            key: "compress.externalModel.url",
+                            expected: "non-empty string",
+                            actual: "empty string",
+                        })
                     }
                     if (typeof compress.externalModel.model !== "string") {
                         errors.push({
                             key: "compress.externalModel.model",
                             expected: "string",
                             actual: typeof compress.externalModel.model,
+                        })
+                    } else if (compress.externalModel.model.trim().length === 0) {
+                        errors.push({
+                            key: "compress.externalModel.model",
+                            expected: "non-empty string",
+                            actual: "empty string",
+                        })
+                    }
+                    if (
+                        compress.externalModel.apiKey !== undefined &&
+                        typeof compress.externalModel.apiKey !== "string"
+                    ) {
+                        errors.push({
+                            key: "compress.externalModel.apiKey",
+                            expected: "string",
+                            actual: typeof compress.externalModel.apiKey,
+                        })
+                    }
+                    if (
+                        compress.externalModel.timeout !== undefined &&
+                        (typeof compress.externalModel.timeout !== "number" ||
+                            !Number.isFinite(compress.externalModel.timeout) ||
+                            compress.externalModel.timeout <= 0)
+                    ) {
+                        errors.push({
+                            key: "compress.externalModel.timeout",
+                            expected: "positive finite number",
+                            actual: JSON.stringify(compress.externalModel.timeout),
+                        })
+                    }
+                    if (
+                        compress.externalModel.retries !== undefined &&
+                        (!Number.isInteger(compress.externalModel.retries) ||
+                            compress.externalModel.retries < 0)
+                    ) {
+                        errors.push({
+                            key: "compress.externalModel.retries",
+                            expected: "non-negative integer",
+                            actual: JSON.stringify(compress.externalModel.retries),
                         })
                     }
                 }
@@ -832,7 +881,7 @@ function loadConfigFile(configPath: string): ConfigLoadResult {
     }
 
     try {
-        const parsed = parse(fileContent, undefined, { allowTrailingComma: true })
+        const parsed = jsoncParser.parse(fileContent, undefined, { allowTrailingComma: true })
         if (parsed === undefined || parsed === null) {
             return { data: null, parseError: "Config file is empty or invalid" }
         }

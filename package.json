@@ -49,7 +49,7 @@
     "author": "LeXwDeX",
     "license": "AGPL-3.0-or-later",
     "peerDependencies": {
-        "@opencode-ai/plugin": ">=1.4.3"
+        "@opencode-ai/plugin": ">=1.4.3 <2"
     },
     "dependencies": {
         "@anthropic-ai/tokenizer": "^0.0.4",

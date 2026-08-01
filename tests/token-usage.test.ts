@@ -202,12 +202,12 @@ function createActiveBlock(
     }
 }
 
-test("getCurrentTokenUsage returns 0 until a fresh assistant follows compaction", () => {
+test("getCurrentTokenUsage estimates new user content after compaction", () => {
     const messages = buildCompactedMessages()
     const state = createSessionState()
     state.lastCompaction = 2
 
-    assert.equal(getCurrentTokenUsage(state, messages), 0)
+    assert.ok(getCurrentTokenUsage(state, messages) > 0)
 })
 
 test("isContextOverLimits ignores stale summary totals and resumes with fresh reported totals", () => {
@@ -216,7 +216,7 @@ test("isContextOverLimits ignores stale summary totals and resumes with fresh re
     state.lastCompaction = 2
 
     const staleAssistantTotal = 86000 + 1200 + 300 + 5000
-    assert.equal(getCurrentTokenUsage(state, messages), 0)
+    assert.ok(getCurrentTokenUsage(state, messages) > 0)
 
     const underLimit = isContextOverLimits(
         buildConfig(staleAssistantTotal - 1, 1),
@@ -227,7 +227,7 @@ test("isContextOverLimits ignores stale summary totals and resumes with fresh re
     )
 
     assert.equal(underLimit.overMaxLimit, false)
-    assert.equal(underLimit.overMinLimit, false)
+    assert.equal(underLimit.overMinLimit, true)
 
     messages.push(buildPostCompactionAssistantMessage())
     const freshReportedTotal = 2400 + 600 + 150 + 300
@@ -243,6 +243,34 @@ test("isContextOverLimits ignores stale summary totals and resumes with fresh re
     )
 
     assert.equal(overLimit.overMaxLimit, true)
+})
+
+test("getCurrentTokenUsage adds the latest user message to reported API totals", () => {
+    const messages = buildCompactedMessages()
+    messages.push(buildPostCompactionAssistantMessage())
+    const state = createSessionState()
+    state.lastCompaction = 2
+
+    const reported = 2400 + 600 + 150 + 300
+    messages.push({
+        info: {
+            id: "msg-user-large",
+            role: "user",
+            sessionID: "ses_compaction_token_usage",
+            agent: "assistant",
+            time: { created: 5 },
+        } as WithParts["info"],
+        parts: [
+            textPart(
+                "msg-user-large",
+                "ses_compaction_token_usage",
+                "msg-user-large-part",
+                repeatedWord("new-context", 1000),
+            ),
+        ],
+    })
+
+    assert.ok(getCurrentTokenUsage(state, messages) > reported)
 })
 
 test("isContextOverLimits extends the max threshold by active summary tokens", () => {

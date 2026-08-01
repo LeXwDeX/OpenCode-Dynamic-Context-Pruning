@@ -7,7 +7,7 @@ import {
     type HostPermissionSnapshot,
 } from "./lib/host-permissions"
 import { Logger } from "./lib/logger"
-import { createSessionState } from "./lib/state"
+import { createSessionState, SessionStateStore } from "./lib/state"
 import { PromptStore } from "./lib/prompts/store"
 import {
     createChatMessageTransformHandler,
@@ -16,7 +16,6 @@ import {
     createSystemPromptHandler,
     createTextCompleteHandler,
 } from "./lib/hooks"
-import { configureClientAuth, isSecureMode } from "./lib/auth"
 import { startAutoUpdate } from "./lib/update"
 
 const server: Plugin = (async (ctx) => {
@@ -27,16 +26,11 @@ const server: Plugin = (async (ctx) => {
     }
 
     const logger = new Logger(config.debug)
-    const state = createSessionState()
+    const states = new SessionStateStore(createSessionState)
     const prompts = new PromptStore(logger, ctx.directory, config.experimental.customPrompts)
     const hostPermissions: HostPermissionSnapshot = {
         global: undefined,
         agents: {},
-    }
-
-    if (isSecureMode()) {
-        configureClientAuth(ctx.client)
-        // logger.info("Secure mode detected, configured client authentication")
     }
 
     logger.info("DCP initialized", {
@@ -47,7 +41,7 @@ const server: Plugin = (async (ctx) => {
 
     const compressToolContext = {
         client: ctx.client,
-        state,
+        state: states,
         logger,
         config,
         prompts,
@@ -55,29 +49,29 @@ const server: Plugin = (async (ctx) => {
 
     return {
         "experimental.chat.system.transform": createSystemPromptHandler(
-            state,
+            states,
             logger,
             config,
             prompts,
         ),
         "experimental.chat.messages.transform": createChatMessageTransformHandler(
             ctx.client,
-            state,
+            states,
             logger,
             config,
             prompts,
             hostPermissions,
-        ) as any,
+        ),
         "experimental.text.complete": createTextCompleteHandler(),
         "command.execute.before": createCommandExecuteHandler(
             ctx.client,
-            state,
+            states,
             logger,
             config,
             ctx.directory,
             hostPermissions,
         ),
-        event: createEventHandler(state, logger),
+        event: createEventHandler(states, logger),
         tool: {
             ...(config.compress.permission !== "deny" && {
                 compress:

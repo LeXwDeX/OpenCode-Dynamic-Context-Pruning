@@ -26,23 +26,7 @@ import {
 } from "./state"
 import type { CompressRangeToolArgs, SearchContext } from "./types"
 import { generateSummaryViaExternal } from "./external-inference"
-
-function extractRangeText(
-    selection: { messageIds: string[] },
-    searchContext: SearchContext,
-): string {
-    const parts: string[] = []
-    for (const messageId of selection.messageIds) {
-        const msg = searchContext.rawMessagesById.get(messageId)
-        if (!msg) continue
-        for (const part of msg.parts) {
-            if (part.type === "text" && typeof part.text === "string") {
-                parts.push(part.text)
-            }
-        }
-    }
-    return parts.join("\n\n")
-}
+import { runWithConcurrency, serializeMessagesForExternalSummary } from "./external-content"
 
 function buildSchema(externalModelEnabled: boolean) {
     const summaryField = externalModelEnabled
@@ -96,28 +80,30 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                     ? (toolCtx as unknown as { callID: string }).callID
                     : undefined
 
-            const { rawMessages, searchContext } = await prepareSession(
+            const { state, rawMessages, searchContext } = await prepareSession(
                 ctx,
                 toolCtx,
                 `Compress Range: ${input.topic}`,
             )
-            const resolvedPlans = resolveRanges(input, searchContext, ctx.state)
+            const resolvedPlans = resolveRanges(input, searchContext, state)
             validateNonOverlapping(resolvedPlans)
 
-            if (ctx.config.compress.externalModel) {
-                for (const plan of resolvedPlans) {
+            const externalModel = ctx.config.compress.externalModel
+            if (externalModel) {
+                await runWithConcurrency(resolvedPlans, 3, async (plan) => {
                     if (plan.entry.summary === undefined) {
-                        const userContent = extractRangeText(plan.selection, searchContext)
-                        const generated = await generateSummaryViaExternal(
-                            ctx.config.compress.externalModel,
-                            {
-                                systemPrompt: runtimePrompts.compressRange,
-                                userContent,
-                            },
-                        )
+                        const selectedMessages = plan.selection.messageIds.flatMap((messageId) => {
+                            const message = searchContext.rawMessagesById.get(messageId)
+                            return message ? [message] : []
+                        })
+                        const userContent = serializeMessagesForExternalSummary(selectedMessages)
+                        const generated = await generateSummaryViaExternal(externalModel, {
+                            systemPrompt: runtimePrompts.compressRange,
+                            userContent,
+                        })
                         plan.entry.summary = generated
                     }
-                }
+                })
             }
 
             const notifications: NotificationEntry[] = []
@@ -157,7 +143,7 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                     injected.expandedSummary,
                     plan.selection,
                     searchContext,
-                    ctx.state,
+                    state,
                     ctx.config.compress.protectUserMessages,
                 )
 
@@ -165,13 +151,13 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                     summaryWithUsers,
                     plan.selection,
                     searchContext,
-                    ctx.state,
+                    state,
                     ctx.config.compress.protectTags,
                 )
 
                 const summaryWithTools = await appendProtectedTools(
                     ctx.client,
-                    ctx.state,
+                    state,
                     ctx.config.experimental.allowSubAgents,
                     summaryWithPromptInfo,
                     plan.selection,
@@ -196,15 +182,15 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                 })
             }
 
-            const runId = allocateRunId(ctx.state)
+            const runId = allocateRunId(state)
 
             for (const preparedPlan of preparedPlans) {
-                const blockId = allocateBlockId(ctx.state)
+                const blockId = allocateBlockId(state)
                 const storedSummary = wrapCompressedSummary(blockId, preparedPlan.finalSummary)
                 const summaryTokens = countTokens(storedSummary)
 
                 const applied = applyCompressionState(
-                    ctx.state,
+                    state,
                     {
                         topic: input.topic,
                         batchTopic: input.topic,
@@ -233,7 +219,7 @@ export function createCompressRangeTool(ctx: ToolContext): ReturnType<typeof too
                 })
             }
 
-            await finalizeSession(ctx, toolCtx, rawMessages, notifications, input.topic)
+            await finalizeSession(ctx, state, toolCtx, rawMessages, notifications, input.topic)
 
             return `Compressed ${totalCompressedMessages} messages into ${COMPRESSED_BLOCK_HEADER}.`
         },

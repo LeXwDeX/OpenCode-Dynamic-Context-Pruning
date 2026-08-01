@@ -13,27 +13,32 @@ import {
     collectTurnNudgeAnchors,
 } from "./utils"
 import { getLastUserMessage } from "../messages/query"
+import { SessionStateStore, type SessionStateTarget, resolveSessionState } from "./store"
+import type { OpenCodeClient } from "../opencode-client"
 
 export const checkSession = async (
-    client: any,
-    state: SessionState,
+    client: OpenCodeClient,
+    target: SessionStateTarget,
     logger: Logger,
     messages: WithParts[],
     manualModeDefault: boolean,
-): Promise<void> => {
+): Promise<SessionState | undefined> => {
     const lastUserMessage = getLastUserMessage(messages)
-    if (!lastUserMessage) {
-        return
-    }
-
-    const lastSessionId = lastUserMessage.info.sessionID
+    const lastSessionId =
+        lastUserMessage?.info.sessionID ??
+        messages.findLast((message) => typeof message.info?.sessionID === "string")?.info.sessionID
+    if (!lastSessionId) return target instanceof SessionStateStore ? undefined : target
+    const state =
+        target instanceof SessionStateStore
+            ? target.registerMessages(lastSessionId, messages)
+            : resolveSessionState(target, lastSessionId)
 
     if (state.sessionId === null || state.sessionId !== lastSessionId) {
         logger.info(`Session changed: ${state.sessionId} -> ${lastSessionId}`)
         try {
-            await ensureSessionInitialized(
+            await initializeSessionState(
                 client,
-                state,
+                target,
                 lastSessionId,
                 logger,
                 messages,
@@ -60,6 +65,7 @@ export const checkSession = async (
     }
 
     state.currentTurn = countTurns(state, messages)
+    return state
 }
 
 export function createSessionState(): SessionState {
@@ -85,6 +91,7 @@ export function createSessionState(): SessionState {
         compressionTiming: {
             startsByCallId: new Map<string, number>(),
             pendingByCallId: new Map(),
+            recordedAtByCallId: new Map<string, number>(),
         },
         toolParameters: new Map<string, ToolParameterEntry>(),
         subAgentResultCache: new Map<string, string>(),
@@ -102,6 +109,7 @@ export function createSessionState(): SessionState {
 }
 
 export function resetSessionState(state: SessionState): void {
+    const modelContextLimit = state.modelContextLimit
     state.sessionId = null
     state.isSubAgent = false
     state.manualMode = false
@@ -130,12 +138,31 @@ export function resetSessionState(state: SessionState): void {
     }
     state.lastCompaction = 0
     state.currentTurn = 0
-    state.modelContextLimit = undefined
+    state.modelContextLimit = modelContextLimit
     state.systemPromptTokens = undefined
 }
 
+export async function initializeSessionState(
+    client: OpenCodeClient,
+    target: SessionStateTarget,
+    sessionId: string,
+    logger: Logger,
+    messages: WithParts[],
+    manualModeEnabled: boolean,
+): Promise<SessionState> {
+    if (target instanceof SessionStateStore) {
+        target.registerMessages(sessionId, messages)
+        return target.initialize(sessionId, (state) =>
+            ensureSessionInitialized(client, state, sessionId, logger, messages, manualModeEnabled),
+        )
+    }
+
+    await ensureSessionInitialized(client, target, sessionId, logger, messages, manualModeEnabled)
+    return target
+}
+
 export async function ensureSessionInitialized(
-    client: any,
+    client: OpenCodeClient,
     state: SessionState,
     sessionId: string,
     logger: Logger,

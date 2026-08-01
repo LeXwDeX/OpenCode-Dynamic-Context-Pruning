@@ -19,6 +19,10 @@ export function syncToolCache(
         logger.info("Syncing tool parameters from OpenCode messages")
 
         let turnCounter = 0
+        const candidates = new Map<
+            string,
+            { part: Extract<WithParts["parts"][number], { type: "tool" }>; turn: number }
+        >()
 
         for (const msg of messages) {
             if (isMessageCompacted(state, msg)) {
@@ -36,33 +40,45 @@ export function syncToolCache(
                     continue
                 }
 
+                candidates.delete(part.callID)
+                candidates.set(part.callID, { part, turn: turnCounter })
+            }
+        }
+
+        const recentCandidates = Array.from(candidates.entries())
+            .filter(([, candidate]) => {
                 const turnProtectionEnabled = config.turnProtection.enabled
                 const turnProtectionTurns = config.turnProtection.turns
-                const isProtectedByTurn =
+                return !(
                     turnProtectionEnabled &&
                     turnProtectionTurns > 0 &&
-                    state.currentTurn - turnCounter < turnProtectionTurns
+                    state.currentTurn - candidate.turn < turnProtectionTurns
+                )
+            })
+            .slice(-MAX_TOOL_CACHE_SIZE)
+        const retainedIds = new Set(recentCandidates.map(([callId]) => callId))
 
-                if (state.toolParameters.has(part.callID)) {
-                    continue
-                }
+        for (const callId of state.toolParameters.keys()) {
+            if (!retainedIds.has(callId)) state.toolParameters.delete(callId)
+        }
 
-                if (isProtectedByTurn) {
-                    continue
-                }
+        for (const [callId, { part, turn }] of recentCandidates) {
+            const status = part.state.status as ToolStatus | undefined
+            const cached = state.toolParameters.get(callId)
+            if (cached?.status === status) continue
 
-                const tokenCount = countToolTokens(part)
-
-                state.toolParameters.set(part.callID, {
-                    tool: part.tool,
-                    parameters: part.state?.input ?? {},
-                    status: part.state.status as ToolStatus | undefined,
-                    error: part.state.status === "error" ? part.state.error : undefined,
-                    turn: turnCounter,
-                    tokenCount,
-                })
+            const tokenCount = countToolTokens(part)
+            state.toolParameters.set(callId, {
+                tool: part.tool,
+                parameters: part.state?.input ?? {},
+                status,
+                error: part.state.status === "error" ? part.state.error : undefined,
+                turn,
+                tokenCount,
+            })
+            if (!cached) {
                 logger.info(
-                    `Cached tool id: ${part.callID} (turn ${turnCounter}${tokenCount !== undefined ? `, ${tokenCount} tokens` : ""})`,
+                    `Cached tool id: ${callId} (turn ${turn}${tokenCount !== undefined ? `, ${tokenCount} tokens` : ""})`,
                 )
             }
         }

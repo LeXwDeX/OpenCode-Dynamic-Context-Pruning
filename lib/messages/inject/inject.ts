@@ -73,7 +73,11 @@ export const injectCompressNudges = (
         state.nudges.contextLimitAnchors.clear()
         state.nudges.turnNudgeAnchors.clear()
         state.nudges.iterationNudgeAnchors.clear()
-        void saveSessionState(state, logger)
+        void saveSessionState(state, logger).catch((error) =>
+            logger.warn("Failed to persist context-limit nudge", {
+                error: error instanceof Error ? error.message : String(error),
+            }),
+        )
         return
     }
 
@@ -158,7 +162,11 @@ export const injectCompressNudges = (
     applyAnchoredNudges(state, config, messages, prompts, compressionPriorities)
 
     if (anchorsChanged) {
-        void saveSessionState(state, logger)
+        void saveSessionState(state, logger).catch((error) =>
+            logger.warn("Failed to persist compression nudge", {
+                error: error instanceof Error ? error.message : String(error),
+            }),
+        )
     }
 }
 

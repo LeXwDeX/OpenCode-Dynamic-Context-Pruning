@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import { applyExternalModelEnvOverride } from "../lib/config-env-override"
-import type { PluginConfig } from "../lib/config"
+import { getInvalidConfigKeys, validateConfigTypes, type PluginConfig } from "../lib/config"
 
 function buildConfigFixture(): PluginConfig {
     return {
@@ -227,5 +227,45 @@ test("env var externalModel builds without optional fields when only url+model p
             assert.equal(ext.timeout, undefined)
             assert.equal(ext.retries, undefined)
         },
+    )
+})
+
+test("externalModel nested configuration keys are recognized", () => {
+    assert.deepEqual(
+        getInvalidConfigKeys({
+            compress: {
+                externalModel: {
+                    url: "http://localhost:11434/v1",
+                    model: "qwen",
+                    apiKey: "secret",
+                    timeout: 1000,
+                    retries: 2,
+                },
+            },
+        }),
+        [],
+    )
+})
+
+test("externalModel rejects invalid timeout and retries", () => {
+    const errors = validateConfigTypes({
+        compress: {
+            externalModel: {
+                url: "",
+                model: "",
+                timeout: 0,
+                retries: -1,
+            },
+        },
+    })
+
+    assert.deepEqual(
+        errors.map((error) => error.key),
+        [
+            "compress.externalModel.url",
+            "compress.externalModel.model",
+            "compress.externalModel.timeout",
+            "compress.externalModel.retries",
+        ],
     )
 })

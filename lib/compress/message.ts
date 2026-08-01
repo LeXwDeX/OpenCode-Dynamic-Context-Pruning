@@ -13,18 +13,7 @@ import {
 } from "./state"
 import type { CompressMessageToolArgs, SearchContext } from "./types"
 import { generateSummaryViaExternal } from "./external-inference"
-
-function extractMessageText(messageId: string, searchContext: SearchContext): string {
-    const msg = searchContext.rawMessagesById.get(messageId)
-    if (!msg) return ""
-    const parts: string[] = []
-    for (const part of msg.parts) {
-        if (part.type === "text" && typeof part.text === "string") {
-            parts.push(part.text)
-        }
-    }
-    return parts.join("\n\n")
-}
+import { runWithConcurrency, serializeMessagesForExternalSummary } from "./external-content"
 
 function buildSchema(externalModelEnabled: boolean) {
     const summaryField = externalModelEnabled
@@ -75,7 +64,7 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
                     ? (toolCtx as unknown as { callID: string }).callID
                     : undefined
 
-            const { rawMessages, searchContext } = await prepareSession(
+            const { state, rawMessages, searchContext } = await prepareSession(
                 ctx,
                 toolCtx,
                 `Compress Message: ${input.topic}`,
@@ -83,7 +72,7 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
             const { plans, skippedIssues, skippedCount } = resolveMessages(
                 input,
                 searchContext,
-                ctx.state,
+                state,
                 ctx.config,
             )
 
@@ -91,20 +80,21 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
                 throw new Error(formatIssues(skippedIssues, skippedCount))
             }
 
-            if (ctx.config.compress.externalModel) {
-                for (const plan of plans) {
+            const externalModel = ctx.config.compress.externalModel
+            if (externalModel) {
+                await runWithConcurrency(plans, 3, async (plan) => {
                     if (plan.entry.summary === undefined) {
-                        const userContent = extractMessageText(plan.entry.messageId, searchContext)
-                        const generated = await generateSummaryViaExternal(
-                            ctx.config.compress.externalModel,
-                            {
-                                systemPrompt: runtimePrompts.compressMessage,
-                                userContent,
-                            },
+                        const message = searchContext.rawMessagesById.get(plan.entry.messageId)
+                        const userContent = serializeMessagesForExternalSummary(
+                            message ? [message] : [],
                         )
+                        const generated = await generateSummaryViaExternal(externalModel, {
+                            systemPrompt: runtimePrompts.compressMessage,
+                            userContent,
+                        })
                         plan.entry.summary = generated
                     }
-                }
+                })
             }
 
             const notifications: NotificationEntry[] = []
@@ -124,13 +114,13 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
                     plan.entry.summary,
                     plan.selection,
                     searchContext,
-                    ctx.state,
+                    state,
                     ctx.config.compress.protectTags,
                 )
 
                 const summaryWithTools = await appendProtectedTools(
                     ctx.client,
-                    ctx.state,
+                    state,
                     ctx.config.experimental.allowSubAgents,
                     summaryWithPromptInfo,
                     plan.selection,
@@ -145,15 +135,15 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
                 })
             }
 
-            const runId = allocateRunId(ctx.state)
+            const runId = allocateRunId(state)
 
             for (const { plan, summaryWithTools } of preparedPlans) {
-                const blockId = allocateBlockId(ctx.state)
+                const blockId = allocateBlockId(state)
                 const storedSummary = wrapCompressedSummary(blockId, summaryWithTools)
                 const summaryTokens = countTokens(storedSummary)
 
                 applyCompressionState(
-                    ctx.state,
+                    state,
                     {
                         topic: plan.entry.topic,
                         batchTopic: input.topic,
@@ -180,7 +170,7 @@ export function createCompressMessageTool(ctx: ToolContext): ReturnType<typeof t
                 })
             }
 
-            await finalizeSession(ctx, toolCtx, rawMessages, notifications, input.topic)
+            await finalizeSession(ctx, state, toolCtx, rawMessages, notifications, input.topic)
 
             return formatResult(plans.length, skippedIssues, skippedCount)
         },

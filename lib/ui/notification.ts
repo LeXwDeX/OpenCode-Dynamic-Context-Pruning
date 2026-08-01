@@ -1,4 +1,5 @@
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { SessionState } from "../state"
 import {
     formatPrunedItemsList,
@@ -90,7 +91,7 @@ function truncateExtractedSection(
 }
 
 export async function sendUnifiedNotification(
-    client: any,
+    client: OpenCodeClient,
     logger: Logger,
     config: PluginConfig,
     state: SessionState,
@@ -170,7 +171,7 @@ function formatCompressionMetrics(removedTokens: number, summaryTokens: number):
 }
 
 export async function sendCompressNotification(
-    client: any,
+    client: OpenCodeClient,
     logger: Logger,
     config: PluginConfig,
     state: SessionState,
@@ -306,14 +307,13 @@ export async function sendCompressNotification(
 }
 
 export async function sendIgnoredMessage(
-    client: any,
+    client: OpenCodeClient,
     sessionID: string,
     text: string,
     params: any,
     logger: Logger,
 ): Promise<void> {
     const agent = params.agent || undefined
-    const variant = params.variant || undefined
     const model =
         params.providerId && params.modelId
             ? {
@@ -331,7 +331,6 @@ export async function sendIgnoredMessage(
                 noReply: true,
                 agent: agent,
                 model: model,
-                variant: variant,
                 parts: [
                     {
                         type: "text",

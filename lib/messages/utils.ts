@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { SessionState, WithParts } from "../state"
 import { isMessageCompacted } from "../state/utils"
-import type { UserMessage } from "@opencode-ai/sdk/v2"
+import type { UserMessage } from "@opencode-ai/sdk"
 
 const SUMMARY_ID_HASH_LENGTH = 16
 const DCP_BLOCK_ID_TAG_REGEX = /(<dcp-message-id(?=[\s>])[^>]*>)b\d+(<\/dcp-message-id>)/g
@@ -177,17 +177,12 @@ export const stripHallucinationsFromString = (text: string): string => {
 
 export const stripHallucinations = (messages: WithParts[]): void => {
     for (const message of messages) {
+        if (message.info.role !== "assistant") {
+            continue
+        }
         for (const part of message.parts) {
             if (part.type === "text" && typeof part.text === "string") {
                 part.text = stripHallucinationsFromString(part.text)
-            }
-
-            if (
-                part.type === "tool" &&
-                part.state?.status === "completed" &&
-                typeof part.state.output === "string"
-            ) {
-                part.state.output = stripHallucinationsFromString(part.state.output)
             }
         }
     }

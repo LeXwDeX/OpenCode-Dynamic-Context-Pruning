@@ -59,6 +59,18 @@ function mockFetch(
     }
 }
 
+test("generateSummaryViaExternal rejects malformed runtime configuration", async () => {
+    const request = { systemPrompt: "Summarize.", userContent: "Content." }
+    await assert.rejects(
+        generateSummaryViaExternal({ url: " ", model: "test" }, request),
+        /url 必须是非空字符串/,
+    )
+    await assert.rejects(
+        generateSummaryViaExternal({ url: "http://localhost", model: " " }, request),
+        /model 必须是非空字符串/,
+    )
+})
+
 test("generateSummaryViaExternal returns summary string on 200 OK", async () => {
     const mock = mockFetch([
         {

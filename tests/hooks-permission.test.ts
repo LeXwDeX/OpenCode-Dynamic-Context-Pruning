@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 import type { PluginConfig } from "../lib/config"
 import {
@@ -15,6 +18,8 @@ import {
     saveSessionState,
     type WithParts,
 } from "../lib/state"
+
+process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "opencode-dcp-hooks-"))
 
 function buildConfig(permission: "allow" | "ask" | "deny" = "allow"): PluginConfig {
     return {

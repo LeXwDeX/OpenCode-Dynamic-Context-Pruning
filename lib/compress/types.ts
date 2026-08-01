@@ -1,11 +1,18 @@
 import type { PluginConfig } from "../config"
 import type { Logger } from "../logger"
 import type { PromptStore } from "../prompts/store"
-import type { CompressionBlock, CompressionMode, SessionState, WithParts } from "../state"
+import type {
+    CompressionBlock,
+    CompressionMode,
+    SessionState,
+    SessionStateTarget,
+    WithParts,
+} from "../state"
+import type { OpenCodeClient } from "../opencode-client"
 
 export interface ToolContext {
-    client: any
-    state: SessionState
+    client: OpenCodeClient
+    state: SessionStateTarget
     logger: Logger
     config: PluginConfig
     prompts: PromptStore

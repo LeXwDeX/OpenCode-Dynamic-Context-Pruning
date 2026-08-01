@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import test from "node:test"
 import assert from "node:assert/strict"
-import { isAutoUpdatableSpec, isVersionNewer, updateRemoveDir } from "../lib/update"
+import { findAutoUpdateWrapperDir, isAutoUpdatableSpec, isVersionNewer } from "../lib/update"
 
 test("isVersionNewer compares semver versions", () => {
     assert.equal(isVersionNewer("3.2.0", "3.1.9"), true)
@@ -25,7 +25,7 @@ test("isAutoUpdatableSpec rejects pinned and non-registry specs", () => {
     assert.equal(isAutoUpdatableSpec("github:user/repo"), false)
 })
 
-test("updateRemoveDir removes opencode npm wrapper for latest installs", async () => {
+test("findAutoUpdateWrapperDir detects opencode npm wrapper for latest installs", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "dcp-update-"))
     const wrapperDir = join(rootDir, "@lexwdex-org", "opencode-dcp@latest")
     const packageDir = join(wrapperDir, "node_modules", "@lexwdex-org", "opencode-dcp")
@@ -37,10 +37,13 @@ test("updateRemoveDir removes opencode npm wrapper for latest installs", async (
         version: "3.1.9",
     })
 
-    assert.equal(await updateRemoveDir(packageDir, "@lexwdex-org/opencode-dcp"), wrapperDir)
+    assert.equal(
+        await findAutoUpdateWrapperDir(packageDir, "@lexwdex-org/opencode-dcp"),
+        wrapperDir,
+    )
 })
 
-test("updateRemoveDir skips version-locked opencode installs", async () => {
+test("findAutoUpdateWrapperDir skips version-locked opencode installs", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "dcp-update-"))
     const wrapperDir = join(rootDir, "@lexwdex-org", "opencode-dcp@3.1.9")
     const packageDir = join(wrapperDir, "node_modules", "@lexwdex-org", "opencode-dcp")
@@ -52,7 +55,7 @@ test("updateRemoveDir skips version-locked opencode installs", async () => {
         version: "3.1.9",
     })
 
-    assert.equal(await updateRemoveDir(packageDir, "@lexwdex-org/opencode-dcp"), undefined)
+    assert.equal(await findAutoUpdateWrapperDir(packageDir, "@lexwdex-org/opencode-dcp"), undefined)
 })
 
 async function writePackageJson(dir: string, data: Record<string, unknown>) {

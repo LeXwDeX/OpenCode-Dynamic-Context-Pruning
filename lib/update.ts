@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { PluginInput } from "@opencode-ai/plugin"
@@ -10,9 +10,8 @@ type PackageJson = {
 }
 
 type UpdateResult =
-    | { updated: true; name: string; current: string; latest: string }
-    | { updated: false; error: "remove_failed"; name: string; current: string; latest: string }
-    | { updated: false }
+    | { available: true; name: string; current: string; latest: string }
+    | { available: false }
 
 const PACKAGE_NAME = "@lexwdex-org/opencode-dcp"
 
@@ -23,16 +22,18 @@ export function startAutoUpdate(ctx: PluginInput, enabled: boolean): void {
     const timeout = setTimeout(() => controller.abort(), 10_000)
     void checkAutoUpdate(controller.signal)
         .then((result) => {
-            if (!result.updated) return
+            if (!result.available) return
             setTimeout(() => {
-                ctx.client.tui.showToast({
-                    body: {
-                        title: "DCP update ready",
-                        message: `Updated ${result.name} from ${result.current} to ${result.latest}. Restart OpenCode to finish.`,
-                        variant: "info",
-                        duration: 7000,
-                    },
-                })
+                void ctx.client.tui
+                    .showToast({
+                        body: {
+                            title: "DCP update available",
+                            message: `${result.name} ${result.latest} is available (current ${result.current}). Reinstall the plugin to update.`,
+                            variant: "info",
+                            duration: 7000,
+                        },
+                    })
+                    .catch(() => {})
             }, 5000)
         })
         .catch(() => {})
@@ -41,30 +42,18 @@ export function startAutoUpdate(ctx: PluginInput, enabled: boolean): void {
 
 export async function checkAutoUpdate(signal: AbortSignal): Promise<UpdateResult> {
     const packageDir = await findPackageDir(PACKAGE_NAME)
-    if (!packageDir) return { updated: false }
+    if (!packageDir) return { available: false }
 
     const pkg = await readPackageJson(join(packageDir, "package.json"))
-    if (!pkg?.name || !pkg.version) return { updated: false }
+    if (!pkg?.name || !pkg.version) return { available: false }
 
     const latest = await fetchLatestVersion(pkg.name, signal)
-    if (!latest || !isVersionNewer(latest, pkg.version)) return { updated: false }
+    if (!latest || !isVersionNewer(latest, pkg.version)) return { available: false }
 
-    const removeDir = await updateRemoveDir(packageDir, pkg.name)
-    if (!removeDir) return { updated: false }
+    const wrapperDir = await findAutoUpdateWrapperDir(packageDir, pkg.name)
+    if (!wrapperDir) return { available: false }
 
-    try {
-        await rm(removeDir, { recursive: true, force: true })
-    } catch {
-        return {
-            updated: false,
-            error: "remove_failed",
-            name: pkg.name,
-            current: pkg.version,
-            latest,
-        }
-    }
-
-    return { updated: true, name: pkg.name, current: pkg.version, latest }
+    return { available: true, name: pkg.name, current: pkg.version, latest }
 }
 
 async function findPackageDir(name: string) {
@@ -79,7 +68,7 @@ async function findPackageDir(name: string) {
     }
 }
 
-export async function updateRemoveDir(packageDir: string, name: string) {
+export async function findAutoUpdateWrapperDir(packageDir: string, name: string) {
     const packageParent = dirname(packageDir)
     const nodeModulesDir = basename(packageParent).startsWith("@")
         ? dirname(packageParent)

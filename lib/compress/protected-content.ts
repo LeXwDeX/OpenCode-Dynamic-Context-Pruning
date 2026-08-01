@@ -10,8 +10,10 @@ import {
     getSubAgentId,
     mergeSubagentResult,
 } from "../subagents/subagent-results"
+import { cacheSubAgentResult, getCachedSubAgentResult } from "../state/utils"
 import { fetchSessionMessages } from "./search"
 import type { SearchContext, SelectionResolution } from "./types"
+import type { OpenCodeClient } from "../opencode-client"
 
 export function appendProtectedUserMessages(
     summary: string,
@@ -108,7 +110,7 @@ export function extractProtectedPromptInfo(text: string): string[] {
 }
 
 export async function appendProtectedTools(
-    client: any,
+    client: OpenCodeClient,
     state: SessionState,
     allowSubAgents: boolean,
     summary: string,
@@ -157,7 +159,7 @@ export async function appendProtectedTools(
                         part.state?.status === "completed" &&
                         typeof part.state?.output === "string"
                     ) {
-                        const cachedSubAgentResult = state.subAgentResultCache.get(part.callID)
+                        const cachedSubAgentResult = getCachedSubAgentResult(state, part.callID)
 
                         if (cachedSubAgentResult !== undefined) {
                             if (cachedSubAgentResult) {
@@ -181,7 +183,11 @@ export async function appendProtectedTools(
                                 }
 
                                 if (subAgentResultText) {
-                                    state.subAgentResultCache.set(part.callID, subAgentResultText)
+                                    subAgentResultText = cacheSubAgentResult(
+                                        state,
+                                        part.callID,
+                                        subAgentResultText,
+                                    )
                                     output = mergeSubagentResult(
                                         part.state.output,
                                         subAgentResultText,

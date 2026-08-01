@@ -28,7 +28,7 @@ export function formatMessageRef(index: number): string {
         index > MESSAGE_REF_MAX_INDEX
     ) {
         throw new Error(
-            `Message ID index out of bounds: ${index}. Supported range is 0-${MESSAGE_REF_MAX_INDEX}.`,
+            `Message ID index out of bounds: ${index}. Supported range is ${MESSAGE_REF_MIN_INDEX}-${MESSAGE_REF_MAX_INDEX}.`,
         )
     }
     return `m${index.toString().padStart(MESSAGE_REF_WIDTH, "0")}`
@@ -165,17 +165,24 @@ export function assignMessageRefs(state: SessionState, messages: WithParts[]): n
 }
 
 function allocateNextMessageRef(state: SessionState): string {
-    let candidate = Number.isInteger(state.messageIds.nextRef)
-        ? Math.max(MESSAGE_REF_MIN_INDEX, state.messageIds.nextRef)
+    const capacity = MESSAGE_REF_MAX_INDEX - MESSAGE_REF_MIN_INDEX + 1
+    const requested = Number.isInteger(state.messageIds.nextRef)
+        ? state.messageIds.nextRef
         : MESSAGE_REF_MIN_INDEX
+    const start =
+        requested >= MESSAGE_REF_MIN_INDEX && requested <= MESSAGE_REF_MAX_INDEX
+            ? requested
+            : MESSAGE_REF_MIN_INDEX
 
-    while (candidate <= MESSAGE_REF_MAX_INDEX) {
+    for (let offset = 0; offset < capacity; offset++) {
+        const candidate =
+            MESSAGE_REF_MIN_INDEX + ((start - MESSAGE_REF_MIN_INDEX + offset) % capacity)
         const ref = formatMessageRef(candidate)
         if (!state.messageIds.byRef.has(ref)) {
-            state.messageIds.nextRef = candidate + 1
+            state.messageIds.nextRef =
+                candidate === MESSAGE_REF_MAX_INDEX ? MESSAGE_REF_MIN_INDEX : candidate + 1
             return ref
         }
-        candidate++
     }
 
     throw new Error(

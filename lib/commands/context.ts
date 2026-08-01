@@ -41,16 +41,17 @@
  */
 
 import type { Logger } from "../logger"
+import type { OpenCodeClient } from "../opencode-client"
 import type { SessionState, WithParts } from "../state"
 import { sendIgnoredMessage } from "../ui/notification"
 import { formatTokenCount } from "../ui/utils"
 import { isIgnoredUserMessage } from "../messages/query"
 import { isMessageCompacted } from "../state/utils"
 import { countTokens, extractCompletedToolOutput, getCurrentParams } from "../token-utils"
-import type { AssistantMessage, TextPart, ToolPart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, TextPart, ToolPart } from "@opencode-ai/sdk"
 
 export interface ContextCommandContext {
-    client: any
+    client: OpenCodeClient
     state: SessionState
     logger: Logger
     sessionId: string

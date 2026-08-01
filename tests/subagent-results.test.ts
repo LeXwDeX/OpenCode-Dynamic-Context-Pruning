@@ -5,7 +5,8 @@ import {
     buildSubagentResultText,
     mergeSubagentResult,
 } from "../lib/subagents/subagent-results"
-import type { WithParts } from "../lib/state"
+import { createSessionState, type WithParts } from "../lib/state"
+import { cacheSubAgentResult } from "../lib/state/utils"
 
 function buildAssistantMessage(
     id: string,
@@ -135,4 +136,19 @@ test("mergeSubagentResult returns original when output is not string", () => {
 test("mergeSubagentResult leaves output unchanged when no task_result tag", () => {
     const output = "no task result here"
     assert.equal(mergeSubagentResult(output, "replacement"), "no task result here")
+})
+
+test("subagent result cache enforces a total character budget", () => {
+    const state = createSessionState()
+    for (let index = 0; index < 5; index++) {
+        cacheSubAgentResult(state, `call-${index}`, "x".repeat(600_000))
+    }
+
+    const totalChars = Array.from(state.subAgentResultCache.values()).reduce(
+        (total, value) => total + value.length,
+        0,
+    )
+    assert.ok(totalChars <= 2_000_000)
+    assert.equal(state.subAgentResultCache.has("call-0"), false)
+    assert.equal(state.subAgentResultCache.has("call-4"), true)
 })
