@@ -124,6 +124,12 @@ DCP 使用自己的配置文件，按以下顺序搜索：
         // reminders are off (compression less likely). At/above this, reminders
         // are on. Accepts: number or "X%" of model context window.
         "minContextLimit": "50%",
+        // When true (default), DCP injects a soft turn-boundary reminder at every
+        // new user turn, after session.idle, and after vcs.branch.updated events —
+        // regardless of minContextLimit, and only while below maxContextLimit —
+        // asking the model to compress the previous task when the topic changed
+        // (throttled by nudgeFrequency).
+        "boundaryNudge": true,
         // Optional per-model override for maxContextLimit by providerID/modelID.
         // If present, this wins over the global maxContextLimit.
         // Accepts: number or "X%".

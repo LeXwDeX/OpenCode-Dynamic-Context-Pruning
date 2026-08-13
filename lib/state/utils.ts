@@ -393,4 +393,17 @@ export function resetOnCompaction(state: SessionState, messages: WithParts[] = [
     for (const callId of state.subAgentResultCache.keys()) {
         if (!liveToolIds.has(callId)) state.subAgentResultCache.delete(callId)
     }
+
+    const anchorSets = [
+        state.nudges.contextLimitAnchors,
+        state.nudges.turnNudgeAnchors,
+        state.nudges.iterationNudgeAnchors,
+    ]
+    for (const anchorSet of anchorSets) {
+        for (const anchorId of anchorSet) {
+            if (!liveMessageIds.has(anchorId)) {
+                anchorSet.delete(anchorId)
+            }
+        }
+    }
 }

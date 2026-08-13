@@ -211,8 +211,38 @@ function buildMessagePriorityGuidance(
     return renderMessagePriorityGuidance(priorityLabel, refs)
 }
 
-function injectAnchoredNudge(message: WithParts, nudgeText: string): void {
+function normalizeNudgeSignature(baseNudgeText: string): string {
+    return baseNudgeText
+        .replace(/<\/dcp-system-reminder>\s*$/, "")
+        .replace(/^\n+/, "")
+        .trim()
+}
+
+function messageContainsNudgeSignature(message: WithParts, baseNudgeText: string): boolean {
+    const signature = normalizeNudgeSignature(baseNudgeText)
+    if (!signature) {
+        return false
+    }
+
+    for (const part of message.parts) {
+        if (
+            part.type === "text" &&
+            typeof part.text === "string" &&
+            part.text.includes(signature)
+        ) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function injectAnchoredNudge(message: WithParts, nudgeText: string, baseNudgeText: string): void {
     if (!nudgeText.trim()) {
+        return
+    }
+
+    if (messageContainsNudgeSignature(message, baseNudgeText)) {
         return
     }
 
@@ -306,7 +336,7 @@ function applyRangeModeAnchoredNudge(
     }
 
     for (const { message } of collectAnchoredMessages(anchorMessageIds, messages)) {
-        injectAnchoredNudge(message, nudgeText)
+        injectAnchoredNudge(message, nudgeText, baseNudgeText)
     }
 }
 
@@ -328,7 +358,7 @@ function applyMessageModeAnchoredNudge(
             .filter((g) => g.trim().length > 0)
             .join("\n\n")
         const nudgeText = appendGuidanceToDcpTag(baseNudgeText, combinedGuidance)
-        injectAnchoredNudge(message, nudgeText)
+        injectAnchoredNudge(message, nudgeText, baseNudgeText)
     }
 }
 

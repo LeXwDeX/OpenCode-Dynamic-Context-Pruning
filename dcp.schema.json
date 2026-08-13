@@ -203,6 +203,11 @@
                         }
                     ]
                 },
+                "boundaryNudge": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "When enabled, DCP injects a soft turn-boundary reminder at every new user turn (throttled by nudgeFrequency) and after session.idle or vcs.branch.updated events, regardless of minContextLimit and only while below maxContextLimit, asking the model to compress the previous task when the topic changed."
+                },
                 "modelMaxLimits": {
                     "description": "Per-model override for maxContextLimit by exact provider/model key. If set, this takes priority over the global maxContextLimit.",
                     "type": "object",
@@ -311,6 +316,7 @@
                 "summaryBuffer": true,
                 "maxContextLimit": "85%",
                 "minContextLimit": "50%",
+                "boundaryNudge": true,
                 "nudgeFrequency": 2,
                 "iterationNudgeThreshold": 15,
                 "nudgeForce": "strong",

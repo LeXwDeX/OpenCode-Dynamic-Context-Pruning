@@ -50,6 +50,12 @@ export class SessionStateStore {
         return this.states.get(sessionId)
     }
 
+    forEach(callback: (state: SessionState, sessionId: string) => void): void {
+        for (const [sessionId, state] of this.states) {
+            callback(state, sessionId)
+        }
+    }
+
     async initialize(
         sessionId: string,
         initializer: (state: SessionState) => Promise<void>,

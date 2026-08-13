@@ -315,8 +315,63 @@ export function createTextCompleteHandler() {
     }
 }
 
-export function createEventHandler(target: SessionStateTarget, logger: Logger) {
+export function createEventHandler(
+    target: SessionStateTarget,
+    logger: Logger,
+    config: PluginConfig,
+) {
+    const markBoundaryPending = async (state: SessionState | undefined): Promise<void> => {
+        if (!state) return
+        if (config.compress.boundaryNudge === false) return
+        if (state.manualMode) return
+        if (state.isSubAgent && !config.experimental.allowSubAgents) return
+        if (compressPermission(state, config) === "deny") return
+        if (!state.sessionId) return
+        if (state.nudges.boundaryPending) return
+
+        state.nudges.boundaryPending = true
+        await saveSessionState(state, logger)
+        logger.debug("Marked boundary nudge pending", { sessionId: state.sessionId })
+    }
+
     return async (input: { event: any }) => {
+        if (input.event.type === "session.idle") {
+            const sessionId = input.event.properties?.sessionID
+            if (typeof sessionId === "string") {
+                const state =
+                    target instanceof SessionStateStore
+                        ? target.peek(sessionId)
+                        : target.sessionId === sessionId
+                          ? target
+                          : undefined
+                await markBoundaryPending(state).catch((error) =>
+                    logger.warn("Failed to persist boundary nudge", {
+                        error: error instanceof Error ? error.message : String(error),
+                    }),
+                )
+            }
+            return
+        }
+
+        if (input.event.type === "vcs.branch.updated") {
+            if (target instanceof SessionStateStore) {
+                const sessions: SessionState[] = []
+                target.forEach((state) => sessions.push(state))
+                await Promise.all(
+                    sessions.map((state) =>
+                        markBoundaryPending(state).catch((error) =>
+                            logger.warn("Failed to persist boundary nudge", {
+                                error: error instanceof Error ? error.message : String(error),
+                            }),
+                        ),
+                    ),
+                )
+            } else {
+                await markBoundaryPending(target)
+            }
+            return
+        }
+
         const eventTime =
             typeof input.event?.time === "number" && Number.isFinite(input.event.time)
                 ? input.event.time

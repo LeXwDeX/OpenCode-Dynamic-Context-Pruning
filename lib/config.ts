@@ -28,6 +28,7 @@ export interface CompressConfig {
     summaryBuffer: boolean
     maxContextLimit: number | `${number}%`
     minContextLimit: number | `${number}%`
+    boundaryNudge?: boolean
     modelMaxLimits?: Record<string, number | `${number}%`>
     modelMinLimits?: Record<string, number | `${number}%`>
     nudgeFrequency: number
@@ -127,6 +128,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "compress.summaryBuffer",
     "compress.maxContextLimit",
     "compress.minContextLimit",
+    "compress.boundaryNudge",
     "compress.modelMaxLimits",
     "compress.modelMinLimits",
     "compress.nudgeFrequency",
@@ -386,6 +388,17 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                     key: "compress.summaryBuffer",
                     expected: "boolean",
                     actual: typeof compress.summaryBuffer,
+                })
+            }
+
+            if (
+                compress.boundaryNudge !== undefined &&
+                typeof compress.boundaryNudge !== "boolean"
+            ) {
+                errors.push({
+                    key: "compress.boundaryNudge",
+                    expected: "boolean",
+                    actual: typeof compress.boundaryNudge,
                 })
             }
 
@@ -772,6 +785,7 @@ const defaultConfig: PluginConfig = {
         summaryBuffer: true,
         maxContextLimit: "85%",
         minContextLimit: "50%",
+        boundaryNudge: true,
         nudgeFrequency: 2,
         iterationNudgeThreshold: 15,
         nudgeForce: "strong",
@@ -937,6 +951,7 @@ function mergeCompress(
         summaryBuffer: override.summaryBuffer ?? base.summaryBuffer,
         maxContextLimit: override.maxContextLimit ?? base.maxContextLimit,
         minContextLimit: override.minContextLimit ?? base.minContextLimit,
+        boundaryNudge: override.boundaryNudge ?? base.boundaryNudge,
         modelMaxLimits: override.modelMaxLimits ?? base.modelMaxLimits,
         modelMinLimits: override.modelMinLimits ?? base.modelMinLimits,
         nudgeFrequency: override.nudgeFrequency ?? base.nudgeFrequency,

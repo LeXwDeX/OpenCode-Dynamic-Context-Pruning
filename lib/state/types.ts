@@ -88,6 +88,7 @@ export interface Nudges {
     contextLimitAnchors: Set<string>
     turnNudgeAnchors: Set<string>
     iterationNudgeAnchors: Set<string>
+    boundaryPending: boolean
 }
 
 export interface SessionState {

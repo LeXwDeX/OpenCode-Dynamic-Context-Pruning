@@ -219,7 +219,7 @@ test("text complete strips hallucinated metadata tags", async () => {
 test("event hook attaches durations to matching blocks by message and call id", async () => {
     const state = createSessionState()
     state.sessionId = "session-1"
-    const handler = createEventHandler(state, new Logger(false))
+    const handler = createEventHandler(state, new Logger(false), buildConfig())
     const originalNow = Date.now
     Date.now = () => 100
 
@@ -412,7 +412,7 @@ test("event hook attaches durations to matching blocks by message and call id", 
 test("event hook falls back to completed runtime when running duration missing", async () => {
     const state = createSessionState()
     state.sessionId = "session-1"
-    const handler = createEventHandler(state, new Logger(false))
+    const handler = createEventHandler(state, new Logger(false), buildConfig())
 
     state.prune.messages.blocksById.set(1, {
         blockId: 1,
@@ -503,7 +503,7 @@ test("event hook queues duration updates until the matching session is loaded", 
 
     const liveState = createSessionState()
     liveState.sessionId = otherSessionId
-    const handler = createEventHandler(liveState, logger)
+    const handler = createEventHandler(liveState, logger, buildConfig())
 
     await handler({
         event: {
@@ -583,7 +583,7 @@ test("event hook queues duration updates until the matching session is loaded", 
 test("event hook keeps same call id distinct across message ids", async () => {
     const state = createSessionState()
     state.sessionId = "session-1"
-    const handler = createEventHandler(state, new Logger(false))
+    const handler = createEventHandler(state, new Logger(false), buildConfig())
 
     state.prune.messages.blocksById.set(1, {
         blockId: 1,

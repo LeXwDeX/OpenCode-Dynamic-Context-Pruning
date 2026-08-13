@@ -71,7 +71,7 @@ const server: Plugin = (async (ctx) => {
             ctx.directory,
             hostPermissions,
         ),
-        event: createEventHandler(states, logger),
+        event: createEventHandler(states, logger, config),
         tool: {
             ...(config.compress.permission !== "deny" && {
                 compress:

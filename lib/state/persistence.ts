@@ -33,6 +33,7 @@ export interface PersistedNudges {
     contextLimitAnchors: string[]
     turnNudgeAnchors?: string[]
     iterationNudgeAnchors?: string[]
+    boundaryPending?: boolean
 }
 
 export interface PersistedMessageIdState {
@@ -120,6 +121,7 @@ export async function saveSessionState(
             contextLimitAnchors: Array.from(sessionState.nudges.contextLimitAnchors),
             turnNudgeAnchors: Array.from(sessionState.nudges.turnNudgeAnchors),
             iterationNudgeAnchors: Array.from(sessionState.nudges.iterationNudgeAnchors),
+            boundaryPending: sessionState.nudges.boundaryPending === true,
         },
         stats: { ...sessionState.stats },
         lastUpdated: new Date().toISOString(),
@@ -229,6 +231,8 @@ export async function loadSessionState(
             })
         }
         state.nudges.iterationNudgeAnchors = dedupedIterationAnchors
+
+        state.nudges.boundaryPending = state.nudges.boundaryPending === true
 
         logger.info("Loaded session state from disk", {
             sessionId: sessionId,
