@@ -1,485 +1,120 @@
-import {
-    initializeSessionState,
-    resolveSessionState,
-    SessionStateStore,
-    type SessionState,
-    type SessionStateTarget,
-    type WithParts,
-} from "./state"
 import type { Logger } from "./logger"
-import type { PluginConfig } from "./config"
-import { assignMessageRefs } from "./message-ids"
-import {
-    buildPriorityMap,
-    buildToolIdList,
-    injectCompressNudges,
-    injectExtendedSubAgentResults,
-    injectMessageIds,
-    prune,
-    stripHallucinations,
-    stripHallucinationsFromString,
-    stripStaleMetadata,
-    syncCompressionBlocks,
-} from "./messages"
-import { renderSystemPrompt, type PromptStore } from "./prompts"
-import { buildProtectedToolsExtension } from "./prompts/extensions/system"
-import {
-    applyPendingCompressionDurations,
-    buildCompressionTimingKey,
-    consumeCompressionStart,
-    pruneCompressionTiming,
-    resolveCompressionDuration,
-} from "./compress/timing"
-import { filterMessages, filterMessagesInPlace } from "./messages/shape"
-import {
-    applyPendingManualTrigger,
-    handleContextCommand,
-    handleDecompressCommand,
-    handleHelpCommand,
-    handleManualToggleCommand,
-    handleManualTriggerCommand,
-    handleRecompressCommand,
-    handleStatsCommand,
-    handleSweepCommand,
-} from "./commands"
-import { type HostPermissionSnapshot } from "./host-permissions"
-import { compressPermission, syncCompressPermissionState } from "./compress-permission"
-import { checkSession, saveSessionState, syncToolCache } from "./state"
-import { cacheSystemPromptTokens } from "./ui/utils"
 import type { OpenCodeClient } from "./opencode-client"
+import type { PromptStore } from "./prompts/store"
+import type { SummarizeCoordinator } from "./summarize"
 
-const INTERNAL_AGENT_SIGNATURES = [
-    "You are a title generator",
-    "You are a helpful AI assistant tasked with summarizing conversations",
-    "You are an anchored context summarization assistant for coding sessions",
-    "Summarize what was done in this conversation",
-]
+interface CompactionOutput {
+    context: string[]
+    prompt?: string
+}
 
-export function createSystemPromptHandler(
-    target: SessionStateTarget,
-    logger: Logger,
-    config: PluginConfig,
-    prompts: PromptStore,
-) {
-    return async (
-        input: { sessionID?: string; model: { limit: { context: number } } },
-        output: { system: string[] },
-    ) => {
-        const state = input.sessionID
-            ? resolveSessionState(target, input.sessionID)
-            : target instanceof SessionStateStore
-              ? undefined
-              : target
-
-        if (state && input.model?.limit?.context) {
-            state.modelContextLimit = input.model.limit.context
-            logger.debug("Cached model context limit", { limit: state.modelContextLimit })
-        }
-
-        if (state?.isSubAgent && !config.experimental.allowSubAgents) {
-            return
-        }
-
-        const systemText = output.system.join("\n")
-        if (INTERNAL_AGENT_SIGNATURES.some((sig) => systemText.includes(sig))) {
-            logger.info("Skipping DCP system prompt injection for internal agent")
-            return
-        }
-
-        const effectivePermission =
-            input.sessionID && state?.sessionId === input.sessionID
-                ? compressPermission(state, config)
-                : config.compress.permission
-
-        if (effectivePermission === "deny") {
-            return
-        }
-
-        prompts.reload()
-        const runtimePrompts = prompts.getRuntimePrompts()
-        const newPrompt = renderSystemPrompt(
-            runtimePrompts,
-            buildProtectedToolsExtension(config.compress.protectedTools),
-            !!state?.manualMode,
-            !!state?.isSubAgent && config.experimental.allowSubAgents,
-        )
-        if (output.system.length > 0) {
-            output.system[output.system.length - 1] += "\n\n" + newPrompt
-        } else {
-            output.system.push(newPrompt)
+export function createSessionCompactingHandler(prompts: PromptStore, logger: Logger) {
+    return async (input: { sessionID: string }, output: CompactionOutput): Promise<void> => {
+        try {
+            prompts.reload()
+            const prompt = prompts.getRuntimePrompts().compaction
+            if (!output.prompt) {
+                output.prompt = prompt
+            } else if (!output.context.includes(prompt)) {
+                output.context.push(prompt)
+            }
+            logger.debug("Applied semantic pruning prompt", { sessionId: input.sessionID })
+        } catch (error) {
+            logger.warn("Failed to apply semantic pruning prompt; native compaction continues", {
+                sessionId: input.sessionID,
+                error: error instanceof Error ? error.message : String(error),
+            })
         }
     }
 }
 
-export function createChatMessageTransformHandler(
-    client: OpenCodeClient,
-    target: SessionStateTarget,
-    logger: Logger,
-    config: PluginConfig,
-    prompts: PromptStore,
-    hostPermissions: HostPermissionSnapshot,
-) {
-    return async (input: {}, output: { messages: WithParts[] }) => {
-        const receivedMessages = Array.isArray(output.messages) ? output.messages.length : 0
-        const messages = filterMessagesInPlace(output.messages)
-        if (messages.length !== receivedMessages) {
-            logger.warn("Skipping messages with unexpected shape during chat transform", {
-                received: receivedMessages,
-                usable: messages.length,
-            })
-        }
+function latestUserModel(messages: unknown): { providerID: string; modelID: string } | null {
+    if (!Array.isArray(messages)) return null
 
-        const state = await checkSession(
-            client,
-            target,
-            logger,
-            output.messages,
-            config.manualMode.enabled,
-        )
-        if (!state) return
-
-        syncCompressPermissionState(state, config, hostPermissions, output.messages)
-
-        if (state.isSubAgent && !config.experimental.allowSubAgents) {
-            return
-        }
-
-        const originalMessages = output.messages
-        output.messages = structuredClone(output.messages)
-
-        try {
-            stripHallucinations(output.messages)
-            cacheSystemPromptTokens(state, output.messages)
-            assignMessageRefs(state, output.messages)
-            syncCompressionBlocks(state, logger, output.messages)
-            syncToolCache(state, config, logger, output.messages)
-            buildToolIdList(state, output.messages)
-            prune(state, logger, config, output.messages)
-            await injectExtendedSubAgentResults(
-                client,
-                state,
-                logger,
-                output.messages,
-                config.experimental.allowSubAgents,
-            )
-            const compressionPriorities = buildPriorityMap(config, state, output.messages)
-            prompts.reload()
-            injectCompressNudges(
-                state,
-                config,
-                logger,
-                output.messages,
-                prompts.getRuntimePrompts(),
-                compressionPriorities,
-            )
-            injectMessageIds(state, config, output.messages, compressionPriorities)
-            applyPendingManualTrigger(state, output.messages, logger)
-            stripStaleMetadata(output.messages)
-
-            if (state.sessionId) {
-                await logger.saveContext(state.sessionId, output.messages)
-            }
-        } catch (error) {
-            logger.error("Chat message transform failed, returning original messages", {
-                error: error instanceof Error ? error.message : String(error),
-            })
-            output.messages = originalMessages
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const info = messages[index]?.info
+        if (info?.role !== "user") continue
+        const providerID = info.model?.providerID
+        const modelID = info.model?.modelID
+        if (typeof providerID === "string" && typeof modelID === "string") {
+            return { providerID, modelID }
         }
     }
+    return null
+}
+
+async function showToast(
+    client: OpenCodeClient,
+    title: string,
+    message: string,
+    variant: "info" | "warning" | "error" = "info",
+): Promise<void> {
+    await client.tui
+        .showToast({
+            body: { title, message, variant, duration: 5000 },
+        })
+        .catch(() => undefined)
 }
 
 export function createCommandExecuteHandler(
     client: OpenCodeClient,
-    target: SessionStateTarget,
+    summarize: SummarizeCoordinator,
     logger: Logger,
-    config: PluginConfig,
-    workingDirectory: string,
-    hostPermissions: HostPermissionSnapshot,
 ) {
     return async (
-        input: { command: string; sessionID: string; arguments: string },
-        output: { parts: any[] },
-    ) => {
-        if (!config.commands.enabled) {
-            return
-        }
+        input: {
+            command: string
+            sessionID: string
+            arguments: string
+        },
+        _output?: { parts: unknown[] },
+    ): Promise<void> => {
+        if (input.command !== "dcp") return
 
-        if (input.command === "dcp") {
-            const messagesResponse = await client.session.messages({
-                path: { id: input.sessionID },
-            })
-            const messages = filterMessages(messagesResponse.data || messagesResponse)
-
-            const state = await initializeSessionState(
+        const subcommand = (input.arguments ?? "").trim().split(/\s+/, 1)[0]?.toLowerCase()
+        if (subcommand !== "summarize") {
+            await showToast(
                 client,
-                target,
-                input.sessionID,
-                logger,
-                messages,
-                config.manualMode.enabled,
+                "DCP",
+                "Use /dcp summarize for semantic pruning, or OpenCode's native /compact command.",
             )
-
-            syncCompressPermissionState(state, config, hostPermissions, messages)
-
-            const effectivePermission = compressPermission(state, config)
-            if (effectivePermission === "deny") {
-                return
-            }
-
-            const args = (input.arguments || "").trim().split(/\s+/).filter(Boolean)
-            const subcommand = args[0]?.toLowerCase() || ""
-            const subArgs = args.slice(1)
-
-            const commandCtx = {
-                client,
-                state,
-                config,
-                logger,
-                sessionId: input.sessionID,
-                messages,
-            }
-
-            if (subcommand === "context") {
-                await handleContextCommand(commandCtx)
-                throw new Error("__DCP_CONTEXT_HANDLED__")
-            }
-
-            if (subcommand === "stats") {
-                await handleStatsCommand(commandCtx)
-                throw new Error("__DCP_STATS_HANDLED__")
-            }
-
-            if (subcommand === "sweep") {
-                await handleSweepCommand({
-                    ...commandCtx,
-                    args: subArgs,
-                    workingDirectory,
-                })
-                throw new Error("__DCP_SWEEP_HANDLED__")
-            }
-
-            if (subcommand === "manual") {
-                await handleManualToggleCommand(commandCtx, subArgs[0]?.toLowerCase())
-                throw new Error("__DCP_MANUAL_HANDLED__")
-            }
-
-            if (subcommand === "compress") {
-                const userFocus = subArgs.join(" ").trim()
-                const prompt = await handleManualTriggerCommand(commandCtx, "compress", userFocus)
-                if (!prompt) {
-                    throw new Error("__DCP_MANUAL_TRIGGER_BLOCKED__")
-                }
-
-                state.manualMode = "compress-pending"
-                state.pendingManualTrigger = {
-                    sessionId: input.sessionID,
-                    prompt,
-                }
-                const rawArgs = (input.arguments || "").trim()
-                output.parts.length = 0
-                output.parts.push({
-                    type: "text",
-                    text: rawArgs ? `/dcp ${rawArgs}` : `/dcp ${subcommand}`,
-                })
-                return
-            }
-
-            if (subcommand === "decompress") {
-                await handleDecompressCommand({
-                    ...commandCtx,
-                    args: subArgs,
-                })
-                throw new Error("__DCP_DECOMPRESS_HANDLED__")
-            }
-
-            if (subcommand === "recompress") {
-                await handleRecompressCommand({
-                    ...commandCtx,
-                    args: subArgs,
-                })
-                throw new Error("__DCP_RECOMPRESS_HANDLED__")
-            }
-
-            await handleHelpCommand(commandCtx)
             throw new Error("__DCP_HELP_HANDLED__")
         }
-    }
-}
 
-export function createTextCompleteHandler() {
-    return async (
-        _input: { sessionID: string; messageID: string; partID: string },
-        output: { text: string },
-    ) => {
-        output.text = stripHallucinationsFromString(output.text)
-    }
-}
-
-export function createEventHandler(
-    target: SessionStateTarget,
-    logger: Logger,
-    config: PluginConfig,
-) {
-    const markBoundaryPending = async (state: SessionState | undefined): Promise<void> => {
-        if (!state) return
-        if (config.compress.boundaryNudge === false) return
-        if (state.manualMode) return
-        if (state.isSubAgent && !config.experimental.allowSubAgents) return
-        if (compressPermission(state, config) === "deny") return
-        if (!state.sessionId) return
-        if (state.nudges.boundaryPending) return
-
-        state.nudges.boundaryPending = true
-        await saveSessionState(state, logger)
-        logger.debug("Marked boundary nudge pending", { sessionId: state.sessionId })
-    }
-
-    return async (input: { event: any }) => {
-        if (input.event.type === "session.idle") {
-            const sessionId = input.event.properties?.sessionID
-            if (typeof sessionId === "string") {
-                const state =
-                    target instanceof SessionStateStore
-                        ? target.peek(sessionId)
-                        : target.sessionId === sessionId
-                          ? target
-                          : undefined
-                await markBoundaryPending(state).catch((error) =>
-                    logger.warn("Failed to persist boundary nudge", {
-                        error: error instanceof Error ? error.message : String(error),
-                    }),
-                )
-            }
-            return
-        }
-
-        if (input.event.type === "vcs.branch.updated") {
-            if (target instanceof SessionStateStore) {
-                const sessions: SessionState[] = []
-                target.forEach((state) => sessions.push(state))
-                await Promise.all(
-                    sessions.map((state) =>
-                        markBoundaryPending(state).catch((error) =>
-                            logger.warn("Failed to persist boundary nudge", {
-                                error: error instanceof Error ? error.message : String(error),
-                            }),
-                        ),
-                    ),
-                )
-            } else {
-                await markBoundaryPending(target)
-            }
-            return
-        }
-
-        const eventTime =
-            typeof input.event?.time === "number" && Number.isFinite(input.event.time)
-                ? input.event.time
-                : typeof input.event?.properties?.time === "number" &&
-                    Number.isFinite(input.event.properties.time)
-                  ? input.event.properties.time
-                  : undefined
-
-        if (input.event.type !== "message.part.updated") {
-            return
-        }
-
-        const part = input.event.properties?.part
-        if (part?.type !== "tool" || part.tool !== "compress") {
-            return
-        }
-
-        if (typeof part.callID !== "string" || typeof part.messageID !== "string") {
-            return
-        }
-
-        const eventSessionId =
-            typeof input.event.properties?.sessionID === "string"
-                ? input.event.properties.sessionID
-                : typeof part.sessionID === "string"
-                  ? part.sessionID
-                  : undefined
-        const state =
-            target instanceof SessionStateStore
-                ? target.resolveEventState(eventSessionId, part.messageID)
-                : target
-        const key = buildCompressionTimingKey(part.messageID, part.callID)
-        if (state) pruneCompressionTiming(state)
-
-        if (part.state.status === "pending") {
-            const startedAt = eventTime ?? Date.now()
-            if (!state && target instanceof SessionStateStore) {
-                target.recordOrphanStart(key, startedAt)
-                return
-            }
-            if (!state) return
-            if (state.compressionTiming.startsByCallId.has(key)) {
-                return
-            }
-            state.compressionTiming.startsByCallId.set(key, startedAt)
-            state.compressionTiming.recordedAtByCallId.set(key, Date.now())
-            logger.debug("Recorded compression start", {
-                messageID: part.messageID,
-                callID: part.callID,
-                startedAt,
-            })
-            return
-        }
-
-        if (part.state.status === "completed") {
-            const start = state
-                ? consumeCompressionStart(state, part.messageID, part.callID)
-                : target instanceof SessionStateStore
-                  ? target.consumeOrphanStart(key)
-                  : undefined
-            const durationMs = resolveCompressionDuration(start, eventTime, part.state.time)
-            if (typeof durationMs !== "number") {
-                return
-            }
-
-            if (!state && target instanceof SessionStateStore) {
-                target.recordOrphanPending(key, {
-                    messageId: part.messageID,
-                    callId: part.callID,
-                    durationMs,
-                })
-                return
-            }
-            if (!state) return
-            state.compressionTiming.pendingByCallId.set(key, {
-                messageId: part.messageID,
-                callId: part.callID,
-                durationMs,
-            })
-            state.compressionTiming.recordedAtByCallId.set(key, Date.now())
-
-            const updates = applyPendingCompressionDurations(state)
-            if (updates === 0) {
-                return
-            }
-
-            await saveSessionState(state, logger)
-
-            logger.info("Attached compression time to blocks", {
-                messageID: part.messageID,
-                callID: part.callID,
-                blocks: updates,
-                durationMs,
-            })
-            return
-        }
-
-        if (part.state.status === "running") {
-            return
-        }
-
-        if (state) {
-            state.compressionTiming.startsByCallId.delete(
-                buildCompressionTimingKey(part.messageID, part.callID),
+        const response = await client.session.messages({ path: { id: input.sessionID } })
+        const model = latestUserModel(response.data ?? response)
+        if (!model) {
+            await showToast(
+                client,
+                "DCP summarize",
+                "No session model is available yet.",
+                "warning",
             )
-            state.compressionTiming.recordedAtByCallId.delete(key)
-        } else if (target instanceof SessionStateStore) {
-            target.deleteOrphanStart(key)
+            throw new Error("__DCP_SUMMARIZE_NO_MODEL__")
         }
+
+        const result = await summarize.summarize({ sessionID: input.sessionID, model })
+        if (result.status === "succeeded") {
+            await showToast(client, "DCP summarize", "Semantic pruning checkpoint created.")
+        } else if (result.status === "cooldown") {
+            await showToast(
+                client,
+                "DCP summarize",
+                `Previous attempt failed; retry in ${Math.ceil(result.retryAfterMs / 1000)}s.`,
+                "warning",
+            )
+        } else {
+            await showToast(
+                client,
+                "DCP summarize",
+                "Native compaction failed; the original context was kept.",
+                "error",
+            )
+        }
+        logger.debug("Handled DCP summarize command", {
+            sessionId: input.sessionID,
+            status: result.status,
+        })
+        throw new Error("__DCP_SUMMARIZE_HANDLED__")
     }
 }

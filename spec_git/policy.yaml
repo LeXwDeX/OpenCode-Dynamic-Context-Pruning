@@ -1,0 +1,5 @@
+version: 1
+required_checks:
+  - Type Check, Build & Audit
+  - opencode-compatibility
+language: zh
