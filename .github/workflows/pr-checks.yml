@@ -40,7 +40,7 @@ jobs:
               run: npm audit --audit-level=high
               continue-on-error: false
 
-    opencode-compatibility:
+    compatibility-matrix:
         name: OpenCode ${{ matrix.opencode }} compatibility
         runs-on: ubuntu-latest
         strategy:
@@ -69,3 +69,13 @@ jobs:
 
             - name: Build and import plugin
               run: npm run build && node -e "import('./dist/index.js')"
+
+    opencode-compatibility:
+        name: opencode-compatibility
+        needs: compatibility-matrix
+        if: ${{ always() }}
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Verify all compatibility targets
+              run: test "${{ needs.compatibility-matrix.result }}" = "success"
