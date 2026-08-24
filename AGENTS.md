@@ -10,17 +10,15 @@ npm run format:check       # prettier --check (CI enforces this)
 npm run check:package      # build + verify-package.mjs (runs on prepublishOnly)
 ```
 
-Run a single test: `node --import tsx --test tests/compress-range.test.ts`
+Run a single test: `node --import tsx --test tests/summarize.test.ts`
 
 ## Architecture
 
-OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` → returns hook handlers + tool registration.
+OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compaction and command hooks.
 
-- **`lib/hooks.ts`** — All 5 plugin hooks: `chat.system.transform`, `chat.messages.transform`, `text.complete`, `command.execute.before`, `event`
-- **`lib/compress/`** — Compress tool: `message.ts` (per-message mode), `range.ts` (range mode), `pipeline.ts` (shared prepare/finalize)
-- **`lib/state/`** — Session state: `store.ts` isolates state per session; `persistence.ts` saves atomically; `state.ts` initializes; `utils.ts` handles compaction cleanup
-- **`lib/messages/`** — Message processing: `inject/` (nudge injection), `priority.ts`, `prune.ts`, `reasoning-strip.ts`, `query.ts`, `shape.ts`
-- **`lib/prompts/`** — All prompts in **Chinese** (intentional — reduces XML tag hallucination with qwen models). `store.ts` loads custom overrides from disk.
+- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting` and handles `/dcp summarize`.
+- **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown.
+- **`lib/prompts/`** — Chinese semantic pruning prompt and optional `compaction.md` override loading.
 - **`lib/config.ts`** — Config resolution: global `~/.config/opencode/dcp.jsonc` → project `.opencode/dcp.jsonc`
 - **`lib/update.ts`** — Non-destructive npm update check. `PACKAGE_NAME` constant must match `package.json` name.
 
@@ -35,8 +33,8 @@ OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` → returns hook hand
 
 - Test runner: `node:test` (not jest/vitest). Tests use `node:assert/strict`.
 - Use the documented Node.js runner. Bun is not supported because it does not implement nested `t.test()` compatibly.
-- Tests assert on **Chinese prompt text** — when changing prompts, update test regex patterns in `tests/message-priority.test.ts`, `tests/prompts.test.ts`, `tests/compress-message.test.ts`.
-- `resetOnCompaction` GCs messageIds for removed messages after native compaction — tests in `tests/message-ids.test.ts` assert stale aliases are cleaned.
+- Tests assert on **Chinese prompt text** in `tests/compaction-hook.test.ts`.
+- `tests/summarize.test.ts` covers native delegation, session isolation, single-flight, failure cooldown and restart behavior.
 
 ## Formatting
 
@@ -56,9 +54,9 @@ git push origin master --tags  # 推送代码和标签到 GitHub
 ## Key Constraints
 
 - `@opencode-ai/plugin` is a **peerDependency** (`>=1.4.3 <2`) — don't add it to dependencies.
-- `stripStaleMetadata` must **not** include `"reasoning"` type — breaks Anthropic signature preservation.
-- `chat.messages.transform` handler clones messages before transforms and wraps in try/catch (fail-open). Don't remove this defensive wrapping.
-- State persistence: `lastCompaction` and `messageIds` are saved to disk. Don't make them in-memory only.
+- OpenCode owns the rolling checkpoint and retained tail; do not add plugin checkpoint persistence or per-message IDs.
+- Do not add normal chat/system message injection, compression markers, block graphs, anchors, placeholders, nudges or an LLM compression tool.
+- Compaction prompt failures are fail-open: native OpenCode compaction must continue with its default prompt.
 
 <!-- specgit:block:start -->
 ## SpecGit 交付工具链

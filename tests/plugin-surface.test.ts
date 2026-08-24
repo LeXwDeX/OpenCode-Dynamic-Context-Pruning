@@ -1,0 +1,94 @@
+import assert from "node:assert/strict"
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import test from "node:test"
+
+const configHome = mkdtempSync(join(tmpdir(), "opencode-dcp-surface-config-"))
+process.env.XDG_CONFIG_HOME = configHome
+mkdirSync(join(configHome, "opencode"), { recursive: true })
+writeFileSync(
+    join(configHome, "opencode", "dcp.jsonc"),
+    JSON.stringify({ enabled: true, autoUpdate: false }),
+    "utf-8",
+)
+
+function buildCtx() {
+    return {
+        directory: mkdtempSync(join(tmpdir(), "opencode-dcp-surface-")),
+        client: {
+            session: {
+                get: async () => ({ data: {} }),
+                messages: async () => ({ data: [] }),
+                summarize: async () => ({ data: true }),
+            },
+            tui: { showToast: async () => {} },
+        },
+    } as any
+}
+
+async function loadPlugin() {
+    const { default: server } = await import("../index")
+    return server(buildCtx())
+}
+
+test("plugin registers the native session compacting hook", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(typeof hooks["experimental.session.compacting"], "function")
+})
+
+test("plugin no longer registers a system prompt transform hook", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(hooks["experimental.chat.system.transform"], undefined)
+})
+
+test("plugin no longer registers a text.complete hook", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(hooks["experimental.text.complete"], undefined)
+})
+
+test("plugin no longer registers an event handler", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(hooks.event, undefined)
+})
+
+test("plugin no longer registers any LLM tool", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(hooks.tool, undefined)
+})
+
+test("config hook never registers compress permissions or primary tools", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(typeof hooks.config, "function")
+
+    const opencodeConfig: any = {}
+    await hooks.config(opencodeConfig)
+
+    assert.equal(opencodeConfig.permission?.compress, undefined)
+    const primaryTools = opencodeConfig.experimental?.primary_tools ?? []
+    assert.equal(primaryTools.includes("compress"), false)
+})
+
+test("config hook still registers the /dcp command when commands are enabled", async () => {
+    const hooks = await loadPlugin()
+
+    const opencodeConfig: any = {}
+    await hooks.config(opencodeConfig)
+
+    assert.ok(opencodeConfig.command?.dcp, "dcp command should stay registered")
+})
+
+test("removed legacy /dcp subcommands fall through to help", async () => {
+    const hooks = await loadPlugin()
+    const handler = hooks["command.execute.before"]
+    assert.equal(typeof handler, "function")
+
+    for (const sub of ["compress", "decompress 1", "recompress 1", "manual on"]) {
+        const output = { parts: [] as any[] }
+        await assert.rejects(
+            handler({ command: "dcp", sessionID: "ses_surface", arguments: sub }, output),
+            /__DCP_HELP_HANDLED__/,
+            `legacy subcommand "${sub}" must not be handled`,
+        )
+    }
+})

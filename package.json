@@ -3,7 +3,7 @@
     "name": "@lexwdex-org/opencode-dcp",
     "version": "3.4.10",
     "type": "module",
-    "description": "OpenCode plugin that optimizes token usage by pruning obsolete tool outputs from conversation context",
+    "description": "Semantic pruning for OpenCode native context compaction",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
@@ -52,7 +52,6 @@
         "@opencode-ai/plugin": ">=1.4.3 <2"
     },
     "dependencies": {
-        "@anthropic-ai/tokenizer": "^0.0.4",
         "@opencode-ai/sdk": "^1.4.3",
         "jsonc-parser": "^3.3.1"
     },

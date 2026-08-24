@@ -1,5 +1,9 @@
 # 缺陷审计与修复记录：Session 状态已按 sessionId 隔离
 
+> **历史文档：** 本文记录 3.4.x 标记式压缩管线的缺陷与修复。当前 markerless
+> 架构已删除文中涉及的消息 ID、压缩块、nudge、插件状态持久化和旧压缩工具；请以
+> `README.md` 与 `AGENTS.md` 的当前架构说明为准。
+
 审计日期：2026-08-01
 审计版本（修复前）：fork `61700ab` / `@lexwdex-org/opencode-dcp@3.4.8`
 上游对照：`Opencode-DCP/opencode-dynamic-context-pruning@85b6f5c`
