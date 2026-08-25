@@ -21,7 +21,7 @@ OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compac
 - **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description carries the "use immediately on topic change" heuristic guidance.
 - **`lib/session-model.ts`** — Shared latest-user-model resolution from session messages.
 - **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown.
-- **`lib/prompts/compaction.ts`** — Chinese three-tier checkpoint prompt: 系统上下文 (preserved system-level content) → 历史概要 (early/middle history heavily compressed) → 已完成任务概括 + 进行中任务详情 (recent/current-task content lightly compressed).
+- **`lib/prompts/compaction.ts`** — Bilingual (`language` config: `zh` default / `en`) four-section checkpoint prompt: 历史概要 → 已完成任务的概括 → 进行中任务详情 → 未解决问题. Never restates system-level content (AGENTS.md etc.) — OpenCode injects it into the system prompt on every request, outside the compacted message history.
 - **`lib/config.ts`** — Config resolution: global `~/.config/opencode/dcp.jsonc` → project `.opencode/dcp.jsonc`
 - **`lib/update.ts`** — Non-destructive npm update check. `PACKAGE_NAME` constant must match `package.json` name.
 

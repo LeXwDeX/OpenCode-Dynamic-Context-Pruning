@@ -29,10 +29,13 @@ export interface ToolConfig {
     enabled: boolean
 }
 
+export type DcpLanguage = "zh" | "en"
+
 export interface PluginConfig {
     enabled: boolean
     autoUpdate: boolean
     debug: boolean
+    language: DcpLanguage
     commands: Commands
     experimental: ExperimentalConfig
     summarize: SummarizeConfig
@@ -56,6 +59,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "enabled",
     "autoUpdate",
     "debug",
+    "language",
     "commands",
     "commands.enabled",
     "experimental",
@@ -162,6 +166,14 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
 
     if (config.debug !== undefined && typeof config.debug !== "boolean") {
         errors.push({ key: "debug", expected: "boolean", actual: typeof config.debug })
+    }
+
+    if (config.language !== undefined && config.language !== "zh" && config.language !== "en") {
+        errors.push({
+            key: "language",
+            expected: '"zh" or "en"',
+            actual: JSON.stringify(config.language),
+        })
     }
 
     const commands = config.commands
@@ -352,6 +364,7 @@ const defaultConfig: PluginConfig = {
     enabled: true,
     autoUpdate: true,
     debug: false,
+    language: "zh",
     commands: {
         enabled: true,
     },
@@ -565,6 +578,8 @@ function mergeLayer(config: PluginConfig, data: Record<string, any>): PluginConf
         enabled: typeof data.enabled === "boolean" ? data.enabled : config.enabled,
         autoUpdate: typeof data.autoUpdate === "boolean" ? data.autoUpdate : config.autoUpdate,
         debug: typeof data.debug === "boolean" ? data.debug : config.debug,
+        language:
+            data.language === "zh" || data.language === "en" ? data.language : config.language,
         commands: mergeCommands(config.commands, data.commands),
         experimental: mergeExperimental(config.experimental, data.experimental),
         summarize: mergeSummarize(config.summarize, data.summarize),

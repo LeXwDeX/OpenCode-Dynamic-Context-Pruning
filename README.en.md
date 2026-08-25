@@ -54,6 +54,7 @@ DCP loads global, custom-config-directory, then project configuration:
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
+    "language": "zh",
     "commands": { "enabled": true },
     "experimental": { "customPrompts": false },
     "summarize": { "failureCooldownMs": 30000 },
@@ -69,15 +70,16 @@ DCP loads global, custom-config-directory, then project configuration:
 }
 ```
 
-| Key                         | Meaning                                                                           |
-| --------------------------- | --------------------------------------------------------------------------------- |
-| `tool.enabled`              | Register the model-invokable `dcp_prune` tool with heuristic usage guidance       |
-| `autoPrune.enabled`         | Enable plugin-side heuristic auto-compaction                                      |
-| `autoPrune.minMessages`     | Minimum user messages before any auto-prune signal is considered                  |
-| `autoPrune.volumeThreshold` | User messages since the last prune that trigger compaction by volume              |
-| `autoPrune.driftThreshold`  | Jaccard similarity below which consecutive messages count as a topic change (0–1) |
-| `autoPrune.idleGapMs`       | Gap between user messages that counts as resuming after a long break              |
-| `autoPrune.cooldownMs`      | Minimum interval between two automatic prunes of the same session                 |
+| Key                         | Meaning                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| `language`                  | Language of the bundled compaction prompt: `zh` (default) / `en`; custom overrides always win |
+| `tool.enabled`              | Register the model-invokable `dcp_prune` tool with heuristic usage guidance                   |
+| `autoPrune.enabled`         | Enable plugin-side heuristic auto-compaction                                                  |
+| `autoPrune.minMessages`     | Minimum user messages before any auto-prune signal is considered                              |
+| `autoPrune.volumeThreshold` | User messages since the last prune that trigger compaction by volume                          |
+| `autoPrune.driftThreshold`  | Jaccard similarity below which consecutive messages count as a topic change (0–1)             |
+| `autoPrune.idleGapMs`       | Gap between user messages that counts as resuming after a long break                          |
+| `autoPrune.cooldownMs`      | Minimum interval between two automatic prunes of the same session                             |
 
 When `experimental.customPrompts` is enabled, copy the generated
 `~/.config/opencode/dcp-prompts/defaults/compaction.md` to a project, custom-config, or global `dcp-prompts/overrides/compaction.md` path.

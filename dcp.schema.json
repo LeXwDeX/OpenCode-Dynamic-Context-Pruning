@@ -25,6 +25,12 @@
             "default": false,
             "description": "Enable debug logging"
         },
+        "language": {
+            "type": "string",
+            "enum": ["zh", "en"],
+            "default": "zh",
+            "description": "Language of the bundled compaction prompt (custom overrides always win)"
+        },
         "commands": {
             "type": "object",
             "additionalProperties": false,

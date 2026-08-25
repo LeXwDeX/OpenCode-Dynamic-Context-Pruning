@@ -114,6 +114,38 @@ test("config hook still registers the /dcp command when commands are enabled", a
     assert.ok(opencodeConfig.command?.dcp, "dcp command should stay registered")
 })
 
+test("language accepts only zh or en", async () => {
+    const { getInvalidConfigKeys, validateConfigTypes } = await import("../lib/config")
+    assert.deepEqual(validateConfigTypes({ language: "en" }), [])
+    assert.equal(validateConfigTypes({ language: "fr" }).length, 1)
+    assert.deepEqual(getInvalidConfigKeys({ language: "zh" }), [])
+})
+
+test("language config switches the bundled compaction prompt to English", async () => {
+    writeFileSync(
+        join(configHome, "opencode", "dcp.jsonc"),
+        JSON.stringify({ enabled: true, autoUpdate: false, language: "en" }),
+        "utf-8",
+    )
+    try {
+        const hooks = await loadPlugin()
+        const handler = hooks["experimental.session.compacting"] as (
+            input: { sessionID: string },
+            output: { context: string[]; prompt?: string },
+        ) => Promise<void>
+        const output = { context: [] as string[], prompt: undefined as string | undefined }
+        await handler({ sessionID: "ses_lang_en" }, output)
+        assert.match(output.prompt ?? "", /## History Overview/)
+        assert.doesNotMatch(output.prompt ?? "", /## 历史概要/)
+    } finally {
+        writeFileSync(
+            join(configHome, "opencode", "dcp.jsonc"),
+            JSON.stringify({ enabled: true, autoUpdate: false }),
+            "utf-8",
+        )
+    }
+})
+
 test("removed legacy /dcp subcommands fall through to help", async () => {
     const hooks = await loadPlugin()
     const handler = hooks["command.execute.before"]

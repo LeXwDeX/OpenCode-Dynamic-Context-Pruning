@@ -18,7 +18,12 @@ const server: Plugin = (async (ctx) => {
     if (!config.enabled) return {}
 
     const logger = new Logger(config.debug)
-    const prompts = new PromptStore(logger, ctx.directory, config.experimental.customPrompts)
+    const prompts = new PromptStore(
+        logger,
+        ctx.directory,
+        config.experimental.customPrompts,
+        config.language,
+    )
     const summarize = new SummarizeCoordinator(ctx.client, logger, {
         failureCooldownMs: config.summarize.failureCooldownMs,
     })

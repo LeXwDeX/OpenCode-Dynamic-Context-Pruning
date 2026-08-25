@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Logger } from "../logger"
-import { COMPACTION } from "./compaction"
+import { getCompactionPrompt } from "./compaction"
 
 export interface RuntimePrompts {
     compaction: string
@@ -51,15 +51,19 @@ function normalize(content: string): string {
 
 export class PromptStore {
     private readonly paths: PromptPaths
-    private runtime: RuntimePrompts = { compaction: COMPACTION }
+    private readonly defaultPrompt: string
+    private runtime: RuntimePrompts
     private lastReloadAt = 0
 
     constructor(
         private readonly logger: Logger,
         workingDirectory: string,
         private readonly customPromptsEnabled = false,
+        language?: string,
     ) {
         this.paths = resolvePaths(workingDirectory)
+        this.defaultPrompt = getCompactionPrompt(language)
+        this.runtime = { compaction: this.defaultPrompt }
         if (customPromptsEnabled) this.ensureDefaults()
         this.reload()
     }
@@ -72,7 +76,7 @@ export class PromptStore {
         const now = Date.now()
         if (now - this.lastReloadAt < 1000) return
         this.lastReloadAt = now
-        this.runtime = { compaction: COMPACTION }
+        this.runtime = { compaction: this.defaultPrompt }
         if (!this.customPromptsEnabled) return
 
         for (const path of this.paths.overrides) {
@@ -93,7 +97,10 @@ export class PromptStore {
     private ensureDefaults(): void {
         try {
             mkdirSync(this.paths.defaultsDir, { recursive: true })
-            writeFileSync(join(this.paths.defaultsDir, "compaction.md"), `${COMPACTION.trim()}\n`)
+            writeFileSync(
+                join(this.paths.defaultsDir, "compaction.md"),
+                `${this.defaultPrompt.trim()}\n`,
+            )
             writeFileSync(
                 join(this.paths.defaultsDir, "README.md"),
                 "# DCP compaction prompt\n\nCopy `compaction.md` to an `overrides` directory and restart OpenCode.\n",
