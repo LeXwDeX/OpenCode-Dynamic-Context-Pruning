@@ -14,11 +14,14 @@ Run a single test: `node --import tsx --test tests/summarize.test.ts`
 
 ## Architecture
 
-OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compaction and command hooks.
+OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compaction, heuristic auto-prune, model tool, and command hooks.
 
-- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting` and handles `/dcp summarize`.
+- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting`, observes user messages (`chat.message`), turns events into auto-prune triggers (`session.idle`/`session.compacted`/`session.deleted`), and handles `/dcp summarize`.
+- **`lib/auto-prune.ts`** — CJK-aware tokenizer + Jaccard similarity; `AutoPruner` tracks per-session signals (topic-drift, volume, idle-gap), pending triggers, and cooldowns.
+- **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description carries the "use immediately on topic change" heuristic guidance.
+- **`lib/session-model.ts`** — Shared latest-user-model resolution from session messages.
 - **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown.
-- **`lib/prompts/`** — Chinese semantic pruning prompt and optional `compaction.md` override loading.
+- **`lib/prompts/compaction.ts`** — Chinese three-tier checkpoint prompt: 系统上下文 (preserved system-level content) → 历史概要 (early/middle history heavily compressed) → 已完成任务概括 + 进行中任务详情 (recent/current-task content lightly compressed).
 - **`lib/config.ts`** — Config resolution: global `~/.config/opencode/dcp.jsonc` → project `.opencode/dcp.jsonc`
 - **`lib/update.ts`** — Non-destructive npm update check. `PACKAGE_NAME` constant must match `package.json` name.
 
@@ -55,7 +58,8 @@ git push origin master --tags  # 推送代码和标签到 GitHub
 
 - `@opencode-ai/plugin` is a **peerDependency** (`>=1.4.3 <2`) — don't add it to dependencies.
 - OpenCode owns the rolling checkpoint and retained tail; do not add plugin checkpoint persistence or per-message IDs.
-- Do not add normal chat/system message injection, compression markers, block graphs, anchors, placeholders, nudges or an LLM compression tool.
+- Do not add normal chat/system message injection, compression markers, block graphs, anchors, or placeholders.
+- The `dcp_prune` tool and heuristic auto-prune are the only LLM-facing compression surfaces. Auto-prune fires only at turn boundaries (`session.idle`), never mid-turn; both must go through the `SummarizeCoordinator` single-flight/cooldown path.
 - Compaction prompt failures are fail-open: native OpenCode compaction must continue with its default prompt.
 
 <!-- specgit:block:start -->

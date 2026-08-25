@@ -16,6 +16,19 @@ export interface SummarizeConfig {
     failureCooldownMs: number
 }
 
+export interface AutoPruneConfig {
+    enabled: boolean
+    minMessages: number
+    volumeThreshold: number
+    driftThreshold: number
+    idleGapMs: number
+    cooldownMs: number
+}
+
+export interface ToolConfig {
+    enabled: boolean
+}
+
 export interface PluginConfig {
     enabled: boolean
     autoUpdate: boolean
@@ -23,9 +36,20 @@ export interface PluginConfig {
     commands: Commands
     experimental: ExperimentalConfig
     summarize: SummarizeConfig
+    autoPrune: AutoPruneConfig
+    tool: ToolConfig
 }
 
 const DEFAULT_FAILURE_COOLDOWN_MS = 30_000
+
+export const DEFAULT_AUTO_PRUNE: AutoPruneConfig = {
+    enabled: true,
+    minMessages: 8,
+    volumeThreshold: 30,
+    driftThreshold: 0.18,
+    idleGapMs: 30 * 60_000,
+    cooldownMs: 5 * 60_000,
+}
 
 export const VALID_CONFIG_KEYS = new Set([
     "$schema",
@@ -38,6 +62,15 @@ export const VALID_CONFIG_KEYS = new Set([
     "experimental.customPrompts",
     "summarize",
     "summarize.failureCooldownMs",
+    "autoPrune",
+    "autoPrune.enabled",
+    "autoPrune.minMessages",
+    "autoPrune.volumeThreshold",
+    "autoPrune.driftThreshold",
+    "autoPrune.idleGapMs",
+    "autoPrune.cooldownMs",
+    "tool",
+    "tool.enabled",
 ])
 
 // Keys that only existed in the legacy plugin-owned compression state machine.
@@ -196,6 +229,68 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
         }
     }
 
+    const autoPrune = config.autoPrune
+    if (autoPrune !== undefined) {
+        if (typeof autoPrune !== "object" || autoPrune === null || Array.isArray(autoPrune)) {
+            errors.push({
+                key: "autoPrune",
+                expected: "object",
+                actual: typeof autoPrune,
+            })
+        } else {
+            const numericKeys: Array<[string, number, number]> = [
+                ["minMessages", 1, Number.POSITIVE_INFINITY],
+                ["volumeThreshold", 2, Number.POSITIVE_INFINITY],
+                ["driftThreshold", 0, 1],
+                ["idleGapMs", 0, Number.POSITIVE_INFINITY],
+                ["cooldownMs", 0, Number.POSITIVE_INFINITY],
+            ]
+            for (const [key, min, max] of numericKeys) {
+                const value = (autoPrune as Record<string, any>)[key]
+                if (
+                    value !== undefined &&
+                    (typeof value !== "number" ||
+                        !Number.isFinite(value) ||
+                        value < min ||
+                        value > max)
+                ) {
+                    errors.push({
+                        key: `autoPrune.${key}`,
+                        expected: `number in [${min}, ${max === Number.POSITIVE_INFINITY ? "∞" : max}]`,
+                        actual: JSON.stringify(value),
+                    })
+                }
+            }
+            for (const key of ["enabled"] as const) {
+                const value = (autoPrune as Record<string, any>)[key]
+                if (value !== undefined && typeof value !== "boolean") {
+                    errors.push({
+                        key: `autoPrune.${key}`,
+                        expected: "boolean",
+                        actual: typeof value,
+                    })
+                }
+            }
+        }
+    }
+
+    const tool = config.tool
+    if (tool !== undefined) {
+        if (typeof tool !== "object" || tool === null || Array.isArray(tool)) {
+            errors.push({
+                key: "tool",
+                expected: "object",
+                actual: typeof tool,
+            })
+        } else if (tool.enabled !== undefined && typeof tool.enabled !== "boolean") {
+            errors.push({
+                key: "tool.enabled",
+                expected: "boolean",
+                actual: typeof tool.enabled,
+            })
+        }
+    }
+
     return errors
 }
 
@@ -265,6 +360,10 @@ const defaultConfig: PluginConfig = {
     },
     summarize: {
         failureCooldownMs: DEFAULT_FAILURE_COOLDOWN_MS,
+    },
+    autoPrune: { ...DEFAULT_AUTO_PRUNE },
+    tool: {
+        enabled: true,
     },
 }
 
@@ -413,12 +512,51 @@ function mergeSummarize(
     }
 }
 
+function mergeAutoPrune(base: AutoPruneConfig, override?: Record<string, any>): AutoPruneConfig {
+    if (!override || typeof override !== "object" || Array.isArray(override)) {
+        return base
+    }
+
+    const number = (
+        key: "minMessages" | "volumeThreshold" | "driftThreshold" | "idleGapMs" | "cooldownMs",
+        min: number,
+        max = Number.POSITIVE_INFINITY,
+    ): number =>
+        typeof override[key] === "number" &&
+        Number.isFinite(override[key]) &&
+        override[key] >= min &&
+        override[key] <= max
+            ? override[key]
+            : base[key]
+
+    return {
+        enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
+        minMessages: number("minMessages", 1),
+        volumeThreshold: number("volumeThreshold", 2),
+        driftThreshold: number("driftThreshold", 0, 1),
+        idleGapMs: number("idleGapMs", 0),
+        cooldownMs: number("cooldownMs", 0),
+    }
+}
+
+function mergeTool(base: ToolConfig, override?: Partial<ToolConfig>): ToolConfig {
+    if (!override) {
+        return base
+    }
+
+    return {
+        enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
+    }
+}
+
 function deepCloneConfig(config: PluginConfig): PluginConfig {
     return {
         ...config,
         commands: { ...config.commands },
         experimental: { ...config.experimental },
         summarize: { ...config.summarize },
+        autoPrune: { ...config.autoPrune },
+        tool: { ...config.tool },
     }
 }
 
@@ -430,6 +568,8 @@ function mergeLayer(config: PluginConfig, data: Record<string, any>): PluginConf
         commands: mergeCommands(config.commands, data.commands),
         experimental: mergeExperimental(config.experimental, data.experimental),
         summarize: mergeSummarize(config.summarize, data.summarize),
+        autoPrune: mergeAutoPrune(config.autoPrune, data.autoPrune),
+        tool: mergeTool(config.tool, data.tool),
     }
 }
 

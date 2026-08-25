@@ -37,6 +37,26 @@ test("plugin registers the native session compacting hook", async () => {
     assert.equal(typeof hooks["experimental.session.compacting"], "function")
 })
 
+test("plugin registers the heuristic chat.message observer by default", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(typeof hooks["chat.message"], "function")
+})
+
+test("plugin registers the event handler for idle-triggered auto prune", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(typeof hooks.event, "function")
+})
+
+test("plugin registers the model-invokable dcp_prune tool by default", async () => {
+    const hooks = await loadPlugin()
+    const definition = hooks.tool?.dcp_prune as
+        | { description: string; args: Record<string, unknown> }
+        | undefined
+    assert.ok(definition, "dcp_prune tool should be registered")
+    assert.match(definition.description, /话题.*变更/)
+    assert.equal(Object.keys(definition.args).length, 0)
+})
+
 test("plugin no longer registers a system prompt transform hook", async () => {
     const hooks = await loadPlugin()
     assert.equal(hooks["experimental.chat.system.transform"], undefined)
@@ -47,14 +67,30 @@ test("plugin no longer registers a text.complete hook", async () => {
     assert.equal(hooks["experimental.text.complete"], undefined)
 })
 
-test("plugin no longer registers an event handler", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(hooks.event, undefined)
-})
-
-test("plugin no longer registers any LLM tool", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(hooks.tool, undefined)
+test("autoPrune and tool can be disabled independently via config", async () => {
+    writeFileSync(
+        join(configHome, "opencode", "dcp.jsonc"),
+        JSON.stringify({
+            enabled: true,
+            autoUpdate: false,
+            autoPrune: { enabled: false },
+            tool: { enabled: false },
+        }),
+        "utf-8",
+    )
+    try {
+        const hooks = await loadPlugin()
+        assert.equal(hooks["chat.message"], undefined)
+        assert.equal(hooks.event, undefined)
+        assert.equal(hooks.tool, undefined)
+        assert.equal(typeof hooks["experimental.session.compacting"], "function")
+    } finally {
+        writeFileSync(
+            join(configHome, "opencode", "dcp.jsonc"),
+            JSON.stringify({ enabled: true, autoUpdate: false }),
+            "utf-8",
+        )
+    }
 })
 
 test("config hook never registers compress permissions or primary tools", async () => {

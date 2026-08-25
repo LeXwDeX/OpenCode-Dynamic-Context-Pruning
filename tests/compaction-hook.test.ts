@@ -38,10 +38,31 @@ test("compaction prompt compresses small completed topics", () => {
     assert.ok(/已完成/.test(COMPACTION))
 })
 
-test("compaction prompt preserves continuation-critical state", () => {
-    for (const keyword of ["目标", "约束", "决策", "实现状态", "未解决", "下一步"]) {
+test("compaction prompt uses the three-tier checkpoint structure", () => {
+    assert.ok(COMPACTION.includes("## 系统上下文"))
+    assert.ok(COMPACTION.includes("## 历史概要"))
+    assert.ok(COMPACTION.includes("## 已完成任务的概括"))
+    assert.ok(COMPACTION.includes("## 进行中任务详情"))
+})
+
+test("compaction prompt preserves system-level content like AGENTS.md", () => {
+    assert.ok(COMPACTION.includes("AGENTS.md"))
+    assert.ok(COMPACTION.includes("原样保留"))
+})
+
+test("compaction prompt keeps in-progress task details continuation-ready", () => {
+    for (const keyword of ["目标", "已完成步骤", "文件路径", "关键决策", "阻塞", "下一步"]) {
         assert.ok(COMPACTION.includes(keyword), `prompt must mention ${keyword}`)
     }
+})
+
+test("compaction prompt compresses by recency tiers", () => {
+    assert.ok(COMPACTION.includes("早期历史"))
+    assert.ok(COMPACTION.includes("中部历史"))
+    assert.ok(COMPACTION.includes("高度压缩"))
+    assert.ok(COMPACTION.includes("最近历史"))
+    assert.ok(COMPACTION.includes("轻度压缩"))
+    assert.match(COMPACTION, /最近历史轻度压缩[^；]*当前任务/)
 })
 
 test("compacting hook replaces the prompt when none is set", async () => {

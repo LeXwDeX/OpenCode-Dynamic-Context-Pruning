@@ -1,6 +1,9 @@
+import type { AutoPruneConfig } from "./config"
 import type { Logger } from "./logger"
 import type { OpenCodeClient } from "./opencode-client"
 import type { PromptStore } from "./prompts/store"
+import type { PruneSignal, AutoPruner } from "./auto-prune"
+import { resolveSessionModel } from "./session-model"
 import type { SummarizeCoordinator } from "./summarize"
 
 interface CompactionOutput {
@@ -28,21 +31,6 @@ export function createSessionCompactingHandler(prompts: PromptStore, logger: Log
     }
 }
 
-function latestUserModel(messages: unknown): { providerID: string; modelID: string } | null {
-    if (!Array.isArray(messages)) return null
-
-    for (let index = messages.length - 1; index >= 0; index--) {
-        const info = messages[index]?.info
-        if (info?.role !== "user") continue
-        const providerID = info.model?.providerID
-        const modelID = info.model?.modelID
-        if (typeof providerID === "string" && typeof modelID === "string") {
-            return { providerID, modelID }
-        }
-    }
-    return null
-}
-
 async function showToast(
     client: OpenCodeClient,
     title: string,
@@ -54,6 +42,81 @@ async function showToast(
             body: { title, message, variant, duration: 5000 },
         })
         .catch(() => undefined)
+}
+
+export function createChatMessageHandler(autoPruner: AutoPruner) {
+    return async (input: { sessionID: string }, _output?: unknown): Promise<void> => {
+        const parts = (_output as { parts?: unknown[] } | undefined)?.parts ?? []
+        autoPruner.observeUserMessage(input.sessionID, parts)
+    }
+}
+
+const SIGNAL_LABELS: Record<PruneSignal, string> = {
+    "topic-drift": "话题变更",
+    volume: "消息量达到阈值",
+    "idle-gap": "长时间中断后恢复",
+}
+
+export interface EventHandlerDeps {
+    client: OpenCodeClient
+    summarize: SummarizeCoordinator
+    autoPruner: AutoPruner
+    config: AutoPruneConfig
+    logger: Logger
+}
+
+export function createEventHandler(deps: EventHandlerDeps) {
+    async function triggerAutoPrune(sessionID: string, signals: PruneSignal[]): Promise<void> {
+        const reason = signals.map((signal) => SIGNAL_LABELS[signal]).join("、")
+        const model = await resolveSessionModel(deps.client, sessionID)
+        if (!model) {
+            deps.logger.debug("Auto prune skipped; no session model yet", { sessionId: sessionID })
+            return
+        }
+
+        const result = await deps.summarize.summarize({ sessionID, model })
+        deps.autoPruner.markPruned(sessionID)
+
+        if (result.status === "succeeded") {
+            await showToast(deps.client, "DCP 自动压缩", `检测到${reason}，已生成新的语义检查点。`)
+        } else {
+            await showToast(
+                deps.client,
+                "DCP 自动压缩",
+                `检测到${reason}，但压缩失败；原始上下文保持不变。`,
+                "warning",
+            )
+        }
+        deps.logger.debug("Auto prune finished", { sessionId: sessionID, status: result.status })
+    }
+
+    return async (input: { event: { type: string; properties?: Record<string, any> } }) => {
+        const event = input.event
+        const sessionID = event.properties?.sessionID
+        if (typeof sessionID !== "string" || !sessionID) return
+
+        try {
+            if (event.type === "session.idle") {
+                if (!deps.config.enabled) return
+                const signals = deps.autoPruner.consumePending(sessionID)
+                if (signals) await triggerAutoPrune(sessionID, signals)
+                return
+            }
+            if (event.type === "session.compacted") {
+                deps.autoPruner.markPruned(sessionID)
+                return
+            }
+            if (event.type === "session.deleted") {
+                deps.autoPruner.dropSession(sessionID)
+            }
+        } catch (error) {
+            deps.logger.warn("Event handler failed", {
+                type: event.type,
+                sessionId: sessionID,
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
+    }
 }
 
 export function createCommandExecuteHandler(
@@ -81,8 +144,7 @@ export function createCommandExecuteHandler(
             throw new Error("__DCP_HELP_HANDLED__")
         }
 
-        const response = await client.session.messages({ path: { id: input.sessionID } })
-        const model = latestUserModel(response.data ?? response)
+        const model = await resolveSessionModel(client, input.sessionID)
         if (!model) {
             await showToast(
                 client,
