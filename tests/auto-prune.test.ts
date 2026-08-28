@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { AutoPruner, jaccard, tokenize } from "../lib/auto-prune"
 import type { AutoPruneConfig } from "../lib/config"
+import { textParts } from "./fixtures"
 
 function config(overrides: Partial<AutoPruneConfig> = {}): AutoPruneConfig {
     return {
@@ -13,10 +14,6 @@ function config(overrides: Partial<AutoPruneConfig> = {}): AutoPruneConfig {
         cooldownMs: 0,
         ...overrides,
     }
-}
-
-function textParts(text: string): unknown[] {
-    return [{ type: "text", text }]
 }
 
 const SAME_TOPIC = [
@@ -57,6 +54,25 @@ test("topic change after an established thread signals topic-drift", () => {
         pruner.observeUserMessage("s1", textParts(SAME_TOPIC[index]), index * 1000)
     }
     const result = pruner.observeUserMessage("s1", textParts(OTHER_TOPIC), 4000)
+    assert.deepEqual(result.signals, ["topic-drift"])
+})
+
+test("short follow-up messages do not fake a topic change", () => {
+    const pruner = new AutoPruner(config())
+    for (let index = 0; index < SAME_TOPIC.length; index++) {
+        pruner.observeUserMessage("s1", textParts(SAME_TOPIC[index]), index * 1000)
+    }
+    const result = pruner.observeUserMessage("s1", textParts("继续"), 4000)
+    assert.deepEqual(result.signals, [])
+})
+
+test("a real topic change right after short follow-ups still signals drift", () => {
+    const pruner = new AutoPruner(config())
+    for (let index = 0; index < SAME_TOPIC.length; index++) {
+        pruner.observeUserMessage("s1", textParts(SAME_TOPIC[index]), index * 1000)
+    }
+    pruner.observeUserMessage("s1", textParts("继续"), 4000)
+    const result = pruner.observeUserMessage("s1", textParts(OTHER_TOPIC), 5000)
     assert.deepEqual(result.signals, ["topic-drift"])
 })
 

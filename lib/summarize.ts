@@ -11,6 +11,7 @@ export interface SummarizeRequest {
 
 export type SummarizeResult =
     | { status: "succeeded" }
+    | { status: "rejected"; reason: "busy" }
     | { status: "failed"; error: string }
     | { status: "cooldown"; retryAfterMs: number }
 
@@ -32,6 +33,29 @@ function errorMessage(error: unknown): string {
     } catch {
         return "Unknown native compaction error"
     }
+}
+
+/**
+ * Recognizes the host's "session is busy" rejection. Such a rejection is not
+ * a compaction failure: nothing went wrong, so it must not arm the failure
+ * cooldown. Detection is deliberately defensive — a word-bounded "busy" in
+ * the message, a structured 409 status/code, or a Busy* error name — because
+ * hosts differ in how they surface it.
+ */
+function isBusyRejection(error: unknown): boolean {
+    if (error instanceof Error && /\bbusy\b/i.test(error.message)) return true
+    if (typeof error === "string" && /\bbusy\b/i.test(error)) return true
+    const structured = error as {
+        status?: unknown
+        statusCode?: unknown
+        code?: unknown
+        name?: unknown
+    } | null
+    if (!structured || typeof structured !== "object") return false
+    if (structured.status === 409 || structured.statusCode === 409 || structured.code === 409) {
+        return true
+    }
+    return typeof structured.name === "string" && /busy/i.test(structured.name)
 }
 
 export class SummarizeCoordinator {
@@ -75,12 +99,21 @@ export class SummarizeCoordinator {
                 path: { id: request.sessionID },
                 body: request.model,
             })) as NativeResponse
-            if (response?.error || response?.data !== true) {
-                throw new Error(errorMessage(response?.error ?? "Native summarize returned false"))
+            // Judge the raw structured error before wrapping it: a busy
+            // rejection must surface as `rejected`, not as an arming failure.
+            const nativeError = response?.error
+            if (nativeError && isBusyRejection(nativeError)) {
+                return { status: "rejected", reason: "busy" }
+            }
+            if (nativeError || response?.data !== true) {
+                throw new Error(errorMessage(nativeError ?? "Native summarize returned false"))
             }
             this.failedAt.delete(request.sessionID)
             return { status: "succeeded" }
         } catch (error) {
+            if (isBusyRejection(error)) {
+                return { status: "rejected", reason: "busy" }
+            }
             this.failedAt.set(request.sessionID, this.now())
             const message = errorMessage(error)
             await this.logger.warn("Native summarize failed; context remains unchanged", {

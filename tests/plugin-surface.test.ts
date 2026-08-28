@@ -93,6 +93,30 @@ test("autoPrune and tool can be disabled independently via config", async () => 
     }
 })
 
+test("the event hook stays registered with only the tool enabled (deferred prunes)", async () => {
+    writeFileSync(
+        join(configHome, "opencode", "dcp.jsonc"),
+        JSON.stringify({
+            enabled: true,
+            autoUpdate: false,
+            autoPrune: { enabled: false },
+        }),
+        "utf-8",
+    )
+    try {
+        const hooks = await loadPlugin()
+        assert.equal(hooks["chat.message"], undefined)
+        assert.equal(typeof hooks.event, "function")
+        assert.ok(hooks.tool?.dcp_prune, "dcp_prune tool should stay registered")
+    } finally {
+        writeFileSync(
+            join(configHome, "opencode", "dcp.jsonc"),
+            JSON.stringify({ enabled: true, autoUpdate: false }),
+            "utf-8",
+        )
+    }
+})
+
 test("config hook never registers compress permissions or primary tools", async () => {
     const hooks = await loadPlugin()
     assert.equal(typeof hooks.config, "function")

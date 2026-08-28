@@ -44,6 +44,10 @@ export function jaccard(a: Set<string>, b: Set<string>): number {
 
 const WINDOW_SIZE = 4
 const DRIFT_BASELINE = 3
+// Short messages ("继续", "ok") share almost no tokens with any previous turn,
+// so comparing them against the window would fake a topic change. Drift is
+// only evaluated for messages substantial enough to describe a topic.
+const MIN_DRIFT_TOKENS = 6
 
 function extractText(parts: unknown[]): string {
     const texts: string[] = []
@@ -125,15 +129,17 @@ export class AutoPruner {
 
         if (state.count >= DRIFT_BASELINE && text) {
             const current = tokenize(text)
-            let max = 0
-            for (
-                let index = Math.max(0, state.window.length - DRIFT_BASELINE);
-                index < state.window.length;
-                index++
-            ) {
-                max = Math.max(max, jaccard(current, tokenize(state.window[index])))
+            if (current.size >= MIN_DRIFT_TOKENS) {
+                let max = 0
+                for (
+                    let index = Math.max(0, state.window.length - DRIFT_BASELINE);
+                    index < state.window.length;
+                    index++
+                ) {
+                    max = Math.max(max, jaccard(current, tokenize(state.window[index])))
+                }
+                if (max < this.config.driftThreshold) signals.push("topic-drift")
             }
-            if (max < this.config.driftThreshold) signals.push("topic-drift")
         }
 
         if (state.count + 1 >= this.config.volumeThreshold) signals.push("volume")

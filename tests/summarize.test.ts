@@ -117,6 +117,98 @@ test("native false/error responses never report a committed checkpoint", async (
     })
 })
 
+test("a host busy rejection surfaces as rejected and never arms the cooldown", async () => {
+    let calls = 0
+    const subject = coordinator(
+        async () => {
+            calls++
+            return { error: { message: "session is busy, try later" } }
+        },
+        { failureCooldownMs: 500, now: () => 1_000 },
+    )
+
+    assert.deepEqual(await subject.summarize({ sessionID: "ses_busy", model: MODEL }), {
+        status: "rejected",
+        reason: "busy",
+    })
+    assert.deepEqual(await subject.summarize({ sessionID: "ses_busy", model: MODEL }), {
+        status: "rejected",
+        reason: "busy",
+    })
+    assert.equal(calls, 2, "a busy rejection is not a failure; retries stay unthrottled")
+})
+
+test("busy rejections are recognized from structured 409s and error names", async (t) => {
+    await t.test("status 409 error", async () => {
+        const subject = coordinator(async () => {
+            throw Object.assign(new Error("conflict"), { status: 409 })
+        })
+        assert.deepEqual(await subject.summarize({ sessionID: "ses_409", model: MODEL }), {
+            status: "rejected",
+            reason: "busy",
+        })
+    })
+
+    await t.test("BusyError name", async () => {
+        const subject = coordinator(async () => {
+            throw Object.assign(new Error("rejected"), { name: "BusyError" })
+        })
+        assert.deepEqual(await subject.summarize({ sessionID: "ses_named", model: MODEL }), {
+            status: "rejected",
+            reason: "busy",
+        })
+    })
+
+    await t.test("unrelated failures stay failed", async () => {
+        const subject = coordinator(async () => {
+            throw new Error("provider unavailable")
+        })
+        const result = await subject.summarize({ sessionID: "ses_other", model: MODEL })
+        assert.equal(result.status, "failed")
+    })
+})
+
+test("structured busy errors in the native response never arm the cooldown", async (t) => {
+    await t.test("status 409 response error", async () => {
+        let calls = 0
+        const subject = coordinator(
+            async () => {
+                calls++
+                return { error: { status: 409 } }
+            },
+            { failureCooldownMs: 500, now: () => 1_000 },
+        )
+
+        assert.deepEqual(await subject.summarize({ sessionID: "ses_r409", model: MODEL }), {
+            status: "rejected",
+            reason: "busy",
+        })
+        assert.deepEqual(await subject.summarize({ sessionID: "ses_r409", model: MODEL }), {
+            status: "rejected",
+            reason: "busy",
+        })
+        assert.equal(calls, 2, "a busy rejection is not a failure; retries stay unthrottled")
+    })
+
+    await t.test("BusyError response error", async () => {
+        let calls = 0
+        const subject = coordinator(
+            async () => {
+                calls++
+                return { error: { name: "BusyError" } }
+            },
+            { failureCooldownMs: 500, now: () => 1_000 },
+        )
+
+        assert.deepEqual(await subject.summarize({ sessionID: "ses_rnamed", model: MODEL }), {
+            status: "rejected",
+            reason: "busy",
+        })
+        await subject.summarize({ sessionID: "ses_rnamed", model: MODEL })
+        assert.equal(calls, 2, "a busy rejection is not a failure; retries stay unthrottled")
+    })
+})
+
 test("plugin restart has no checkpoint state to restore", async () => {
     let calls = 0
     const invoke = async () => {
