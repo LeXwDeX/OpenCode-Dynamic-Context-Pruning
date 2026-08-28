@@ -1,11 +1,11 @@
 version: 1
-delivery: markerless-semantic-pruning
+delivery: prevent-semantic-pruning
 context:
   kind: branch
-  branch: refactor/4-markerless-semantic-pruning
+  branch: fix/9-prevent-semantic-pruning
 issues:
-  - 4
-  - 5
-  - 6
-  - 7
-pr: 8
+  - 9
+issueKinds:
+  - issue: 9
+    kind: kind::fix
+pr: 10

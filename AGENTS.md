@@ -8,21 +8,29 @@ npm test                   # node --import tsx --test tests/*.test.ts
 npm run build              # tsup (bundle) + tsc --emitDeclarationOnly
 npm run format:check       # prettier --check (CI enforces this)
 npm run check:package      # build + verify-package.mjs (runs on prepublishOnly)
+npm run dev                # opencode plugin dev
+npm run dcp                # tsx scripts/print.ts — preview effective compaction prompt
 ```
 
 Run a single test: `node --import tsx --test tests/summarize.test.ts`
+
+CI (`.github/workflows/pr-checks.yml`): format → typecheck → test → build → `npm audit --audit-level=high`, plus a compatibility matrix that typechecks and imports `dist/` against `@opencode-ai/plugin` `1.4.3` and `latest`.
 
 ## Architecture
 
 OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compaction, heuristic auto-prune, model tool, and command hooks.
 
-- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting`, observes user messages (`chat.message`), turns events into auto-prune triggers (`session.idle`/`session.compacted`/`session.deleted`), and handles `/dcp summarize`.
+- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting`, observes user messages (`chat.message`), turns events into auto-prune triggers (`session.idle`/`session.compacted`/`session.deleted`), and handles `/dcp summarize` via `command.execute.before` (the `dcp` command itself is registered through the `config` hook).
 - **`lib/auto-prune.ts`** — CJK-aware tokenizer + Jaccard similarity; `AutoPruner` tracks per-session signals (topic-drift, volume, idle-gap), pending triggers, and cooldowns.
-- **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description carries the "use immediately on topic change" heuristic guidance.
+- **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description authorizes only real topic changes or explicit user requests. The tool always requests with the `defer` busy policy: a mid-turn call queues the prune for the next turn boundary instead of interrupting the running turn.
+- **`lib/prune-service.ts`** — `PruneService`: the single compression entry point. Every trigger surface goes through `request({ sessionID, onBusy })`; it owns session busy-gating (never compacts a running turn), the deferral queue drained on `session.idle` (a drain that loses the busy race re-queues for the next idle instead of dropping the promise), session model resolution, and delegation to `SummarizeCoordinator`. Before the native call it probes the host's live `GET /session/status` (fail-open when the endpoint is missing) to shrink the idle-check race to one HTTP hop, and maps a host busy-rejection to the `busy` outcome. All outcomes are returned as values (`PruneOutcome`); `request` never rejects.
+- **`lib/activity.ts`** — `SessionActivityTracker`: per-session busy/idle state derived from `session.status` (`busy`/`retry` → busy) / `session.idle` events. Unknown state fails open (proceed) for trigger surfaces that fire at turn boundaries; stale busy evidence decays to unknown after a TTL.
 - **`lib/session-model.ts`** — Shared latest-user-model resolution from session messages.
-- **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown.
+- **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown. A host busy-rejection surfaces as `rejected`/`busy` (word-bounded "busy", structured 409, or a `Busy*` error name) without arming the cooldown.
 - **`lib/prompts/compaction.ts`** — Bilingual (`language` config: `zh` default / `en`) four-section checkpoint prompt: 历史概要 → 已完成任务的概括 → 进行中任务详情 → 未解决问题. Never restates system-level content (AGENTS.md etc.) — OpenCode injects it into the system prompt on every request, outside the compacted message history.
-- **`lib/config.ts`** — Config resolution: global `~/.config/opencode/dcp.jsonc` → project `.opencode/dcp.jsonc`
+- **`lib/prompts/store.ts`** — `PromptStore`: when `experimental.customPrompts` is on, a `dcp-prompts/overrides/compaction.md` override wins over the bundled prompt (resolution: project `.opencode/` → `$OPENCODE_CONFIG_DIR` → global `~/.config/opencode/dcp-prompts/`), reloaded with a 1s throttle.
+- **`lib/config.ts`** — Config resolution: global `~/.config/opencode/dcp.jsonc` → `$OPENCODE_CONFIG_DIR` → project `.opencode/dcp.jsonc` (`.jsonc` or `.json`, layered merge). Adding a config key means updating `VALID_CONFIG_KEYS`, defaults, merge functions, and `validateConfigTypes` here **and** the root `dcp.schema.json` (its `$id` is referenced by generated user configs).
+- **`lib/opencode-client.ts`** / **`lib/logger.ts`** — Thin typed SDK client wrapper and debug-gated logger used by all handlers.
 - **`lib/update.ts`** — Non-destructive npm update check. `PACKAGE_NAME` constant must match `package.json` name.
 
 ## Build & Package
@@ -30,13 +38,15 @@ OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compac
 - **ESM-only** (`"type": "module"`). tsup bundles to single `dist/index.js`. `jsonc-parser` is bundled inline (broken ESM).
 - `tsc --emitDeclarationOnly` generates `.d.ts` files separately.
 - `scripts/verify-package.mjs` validates: import graph has no CJS deps, tarball excludes source/tests/scripts, required files present. Runs automatically on `npm publish`.
-- `.npmignore` excludes `lib/`, `index.ts`, `tests/`, `scripts/` from tarball — only `dist/`, `README.md`, `LICENSE` ship.
+- `package.json` `files` whitelist ships only `dist/`, `README.md`, `LICENSE`; `scripts/` also holds debug utilities (`opencode-session-timeline`, token stats) that are dev-only and never published.
 
 ## Testing
 
 - Test runner: `node:test` (not jest/vitest). Tests use `node:assert/strict`.
 - Use the documented Node.js runner. Bun is not supported because it does not implement nested `t.test()` compatibly.
 - Tests assert on **Chinese prompt text** in `tests/compaction-hook.test.ts`.
+- `tests/plugin-surface.test.ts` pins the exported hook surface of `index.ts` (which hooks fire under which config flags).
+- `tests/config-migration.test.ts` covers legacy `compress.*` keys: they are recognized (migration hint) but ignored — never re-implement them.
 - `tests/summarize.test.ts` covers native delegation, session isolation, single-flight, failure cooldown and restart behavior.
 
 ## Formatting
@@ -59,7 +69,7 @@ git push origin master --tags  # 推送代码和标签到 GitHub
 - `@opencode-ai/plugin` is a **peerDependency** (`>=1.4.3 <2`) — don't add it to dependencies.
 - OpenCode owns the rolling checkpoint and retained tail; do not add plugin checkpoint persistence or per-message IDs.
 - Do not add normal chat/system message injection, compression markers, block graphs, anchors, or placeholders.
-- The `dcp_prune` tool and heuristic auto-prune are the only LLM-facing compression surfaces. Auto-prune fires only at turn boundaries (`session.idle`), never mid-turn; both must go through the `SummarizeCoordinator` single-flight/cooldown path.
+- The `dcp_prune` tool and heuristic auto-prune are the only LLM-facing compression surfaces. Auto-prune fires only at turn boundaries (`session.idle`), never mid-turn; both must go through the `PruneService` (busy-gating + deferral), which delegates to the `SummarizeCoordinator` single-flight/cooldown path. Never call `client.session.summarize` (or `SummarizeCoordinator`) directly from a trigger surface: on hosts whose summarize endpoint mutates the session while busy, that injects a compaction part that hijacks the running turn.
 - Compaction prompt failures are fail-open: native OpenCode compaction must continue with its default prompt.
 
 <!-- specgit:block:start -->
@@ -74,9 +84,12 @@ git push origin master --tags  # 推送代码和标签到 GitHub
   开一个预填确定性骨架的草稿拉取请求（每个绑定议题一行 `Closes #n`，
   随后是 为什么 / 变更内容 / 证据 / 清单 各节），并写入 `.specgit.yaml`。
   重复执行会恢复现场；它是幂等的。
-- 在交付过程中填写骨架各节。占位内容仅是建议——关闭引用是正文里唯一的
-  门槛。PR 正文只在创建时写入一次；任何 SpecGit 命令都不会修改已存在的
-  PR 正文，也从不读取仓库自己的 PR 模板。
+- 议题正文在引导时从对话中填写：`specgit issue` 成功后立即用
+  `gh issue edit <n>` 把讨论出的 为什么 / 范围 / 做法 / 验收 写进它
+  创建的每条议题，然后再开始实现。PR 骨架的占位内容仅是建议——随交付
+  过程填写即可；关闭引用是正文里唯一的门槛。PR 正文只在创建时写入一次；
+  任何 SpecGit 命令都不会修改已存在的 PR 正文，也从不读取仓库自己的
+  PR 模板。
 - 草稿拉取请求恒使裁决失败（`pr_draft`）：在 `specgit finish` 之前，
   先把它标为可评审——GitHub 用 `gh pr ready <number>`，GitLab 用
   `glab mr update <number> --ready`。
@@ -128,6 +141,15 @@ git push origin master --tags  # 推送代码和标签到 GitHub
 
 ### 代理契约要点
 
+- **SpecGit 是这里的默认工作方式。** 任何非平凡的任务——新功能、修复、
+  重构、文档变更——都是一次交付：工作项作为议题存放在这个 tracker
+  里，绝不放进私人任务清单或对话式清单。触发点是“决定开工”的那一刻：
+  对话收敛、开始把计划变成变更之时，第一个动作就是
+  `specgit issue <type>: <标题>...`——先于任何文件编辑。无绑定就动手
+  是违反契约，不是风格偏好。引导完成后，立即用 `gh issue edit` 把
+  讨论中的 为什么 / 范围 / 做法 / 验收 填进每条议题正文，然后再开始
+  实现。会话中途的盘点（“让我列出所有要做的事”）也应变成议题，而不是
+  聊天产物。平凡的回复与只读提问无需如此。
 - 唯一规则：交付完成当且仅当 `specgit finish` 退出 `0`。绝不凭任务
   清单、文件状态或自己跑过的测试宣布完成。
 - 按退出码分支，不按措辞：`1` = 证据齐全，修门槛点名的内容；`3` =

@@ -3,8 +3,8 @@ import type { Logger } from "./logger"
 import type { OpenCodeClient } from "./opencode-client"
 import type { PromptStore } from "./prompts/store"
 import type { PruneSignal, AutoPruner } from "./auto-prune"
-import { resolveSessionModel } from "./session-model"
-import type { SummarizeCoordinator } from "./summarize"
+import type { PruneEventName, PruneService } from "./prune-service"
+import { eventSessionID, retrySeconds } from "./prune-service"
 
 interface CompactionOutput {
     context: string[]
@@ -59,7 +59,7 @@ const SIGNAL_LABELS: Record<PruneSignal, string> = {
 
 export interface EventHandlerDeps {
     client: OpenCodeClient
-    summarize: SummarizeCoordinator
+    prune: PruneService
     autoPruner: AutoPruner
     config: AutoPruneConfig
     logger: Logger
@@ -68,17 +68,41 @@ export interface EventHandlerDeps {
 export function createEventHandler(deps: EventHandlerDeps) {
     async function triggerAutoPrune(sessionID: string, signals: PruneSignal[]): Promise<void> {
         const reason = signals.map((signal) => SIGNAL_LABELS[signal]).join("、")
-        const model = await resolveSessionModel(deps.client, sessionID)
-        if (!model) {
-            deps.logger.debug("Auto prune skipped; no session model yet", { sessionId: sessionID })
+        const result = await deps.prune.request({ sessionID, onBusy: "proceed" })
+
+        // busy and no-model mean nothing was attempted this time. consumePending
+        // has already cleared the signals, so this trigger is spent: there is
+        // no retry at the next idle. New signals only arrive from later messages.
+        const attempted =
+            result.status === "succeeded" ||
+            result.status === "failed" ||
+            result.status === "cooldown"
+        if (!attempted) {
+            if (result.status === "busy") {
+                await showToast(
+                    deps.client,
+                    "DCP 自动压缩",
+                    `检测到${reason}，但会话正忙，本次已跳过；原始上下文保持不变。`,
+                    "warning",
+                )
+            }
+            deps.logger.debug("Auto prune skipped", {
+                sessionId: sessionID,
+                status: result.status,
+            })
             return
         }
-
-        const result = await deps.summarize.summarize({ sessionID, model })
         deps.autoPruner.markPruned(sessionID)
 
         if (result.status === "succeeded") {
             await showToast(deps.client, "DCP 自动压缩", `检测到${reason}，已生成新的语义检查点。`)
+        } else if (result.status === "cooldown") {
+            await showToast(
+                deps.client,
+                "DCP 自动压缩",
+                `检测到${reason}，但上一次压缩失败；${retrySeconds(result.retryAfterMs)} 秒后可重试。`,
+                "warning",
+            )
         } else {
             await showToast(
                 deps.client,
@@ -92,10 +116,16 @@ export function createEventHandler(deps: EventHandlerDeps) {
 
     return async (input: { event: { type: string; properties?: Record<string, any> } }) => {
         const event = input.event
-        const sessionID = event.properties?.sessionID
-        if (typeof sessionID !== "string" || !sessionID) return
+        const sessionID = eventSessionID(event.properties)
+        if (!sessionID) return
 
+        // Every event feeds the service first: it tracks session activity and
+        // drains deferred prunes at the idle boundary. The `session.idle` event
+        // is itself the authoritative turn-boundary evidence, so auto prune
+        // relies on the service's busy re-check (after model resolution) to
+        // stand down when a new turn races the trigger.
         try {
+            deps.prune.observeEvent(event.type, event.properties)
             if (event.type === "session.idle") {
                 if (!deps.config.enabled) return
                 const signals = deps.autoPruner.consumePending(sessionID)
@@ -121,7 +151,7 @@ export function createEventHandler(deps: EventHandlerDeps) {
 
 export function createCommandExecuteHandler(
     client: OpenCodeClient,
-    summarize: SummarizeCoordinator,
+    prune: PruneService,
     logger: Logger,
 ) {
     return async (
@@ -144,8 +174,17 @@ export function createCommandExecuteHandler(
             throw new Error("__DCP_HELP_HANDLED__")
         }
 
-        const model = await resolveSessionModel(client, input.sessionID)
-        if (!model) {
+        const result = await prune.request({ sessionID: input.sessionID, onBusy: "proceed" })
+        if (result.status === "busy") {
+            await showToast(
+                client,
+                "DCP summarize",
+                "Session is busy; the prune will not interrupt the current turn. Try again once it finishes.",
+                "warning",
+            )
+            throw new Error("__DCP_SUMMARIZE_HANDLED__")
+        }
+        if (result.status === "no-model") {
             await showToast(
                 client,
                 "DCP summarize",
@@ -154,15 +193,13 @@ export function createCommandExecuteHandler(
             )
             throw new Error("__DCP_SUMMARIZE_NO_MODEL__")
         }
-
-        const result = await summarize.summarize({ sessionID: input.sessionID, model })
         if (result.status === "succeeded") {
             await showToast(client, "DCP summarize", "Semantic pruning checkpoint created.")
         } else if (result.status === "cooldown") {
             await showToast(
                 client,
                 "DCP summarize",
-                `Previous attempt failed; retry in ${Math.ceil(result.retryAfterMs / 1000)}s.`,
+                `Previous attempt failed; retry in ${retrySeconds(result.retryAfterMs)}s.`,
                 "warning",
             )
         } else {

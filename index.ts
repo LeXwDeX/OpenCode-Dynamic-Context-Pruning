@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import { SessionActivityTracker } from "./lib/activity"
 import { AutoPruner } from "./lib/auto-prune"
 import { getConfig } from "./lib/config"
 import {
@@ -10,6 +11,7 @@ import {
 import { Logger } from "./lib/logger"
 import { PromptStore } from "./lib/prompts/store"
 import { PRUNE_TOOL_NAME, createPruneTool } from "./lib/prune-tool"
+import { PruneService } from "./lib/prune-service"
 import { SummarizeCoordinator } from "./lib/summarize"
 import { startAutoUpdate } from "./lib/update"
 
@@ -27,6 +29,12 @@ const server: Plugin = (async (ctx) => {
     const summarize = new SummarizeCoordinator(ctx.client, logger, {
         failureCooldownMs: config.summarize.failureCooldownMs,
     })
+    const prune = new PruneService({
+        client: ctx.client,
+        summarize,
+        activity: new SessionActivityTracker(),
+        logger,
+    })
     const autoPruner = new AutoPruner(config.autoPrune)
 
     logger.info("DCP initialized", {
@@ -41,19 +49,23 @@ const server: Plugin = (async (ctx) => {
         "experimental.session.compacting": createSessionCompactingHandler(prompts, logger),
         ...(config.autoPrune.enabled && {
             "chat.message": createChatMessageHandler(autoPruner),
+        }),
+        // The event feed drives both auto prune and the tool's deferred prunes,
+        // so it stays registered whenever either surface is on.
+        ...((config.autoPrune.enabled || config.tool.enabled) && {
             event: createEventHandler({
                 client: ctx.client,
-                summarize,
+                prune,
                 autoPruner,
                 config: config.autoPrune,
                 logger,
             }),
         }),
         ...(config.tool.enabled && {
-            tool: { [PRUNE_TOOL_NAME]: createPruneTool({ client: ctx.client, summarize, logger }) },
+            tool: { [PRUNE_TOOL_NAME]: createPruneTool({ prune, logger }) },
         }),
         ...(config.commands.enabled && {
-            "command.execute.before": createCommandExecuteHandler(ctx.client, summarize, logger),
+            "command.execute.before": createCommandExecuteHandler(ctx.client, prune, logger),
             config: async (opencodeConfig) => {
                 opencodeConfig.command ??= {}
                 opencodeConfig.command.dcp = {
