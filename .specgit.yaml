@@ -8,3 +8,4 @@ issues:
 issueKinds:
   - issue: 9
     kind: kind::fix
+pr: 10
