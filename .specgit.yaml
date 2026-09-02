@@ -8,3 +8,4 @@ issues:
 issueKinds:
   - issue: 11
     kind: kind::refactor
+pr: 12
