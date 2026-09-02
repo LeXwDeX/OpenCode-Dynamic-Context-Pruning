@@ -11,6 +11,7 @@ import {
     exciseItems,
     extractTarget,
     findArtifactRuns,
+    findDuplicateRuns,
     findErrorRuns,
     resolveRuns,
     stableInputHash,
@@ -26,10 +27,11 @@ import type { MessageLike, PartLike, Turn } from "./types"
  *
  * - messages are never added, removed, or reordered; part IDs, roles, and
  *   tool-call pairing are never touched
- * - the one structural exception is validity-axis merging (#25, #26): inside
- *   the D/M zones, same-target operation runs and strictly adjacent same-tool
- *   error chains collapse to a single surviving tool part — whole parts are
- *   excised, a message is never emptied, and the C/T zones are exempt
+ * - the one structural exception is validity-axis merging (#25, #26, #28):
+ *   inside the D/M zones, same-target operation runs, strictly adjacent
+ *   same-tool error chains, and byte-identical duplicate calls collapse to a
+ *   single surviving tool part — whole parts are excised, a message is never
+ *   emptied, and the C/T zones are exempt
  * - distant tool outputs are folded with the host's own `time.compacted`
  *   marker, so the wire rendering is the host's native one
  * - middle-zone turns topically discontinuous with the current-task zone
@@ -51,9 +53,9 @@ export interface DtcConfig {
     driftThreshold: number
     /** C-zone tool outputs are head+tail truncated to this many characters. */
     toolOutputKeepChars: number
-    /** Validity axis (#25/#26): M/D same-target artifact runs and adjacent
-     * same-tool error chains merge into one surviving call (`_merged` meta
-     * carries the counts). Duplicate runs land with #28. */
+    /** Validity axis (#25/#26/#28): M/D same-target artifact runs, adjacent
+     * same-tool error chains, and byte-identical duplicate calls merge into
+     * one surviving call (`_merged` meta carries the counts). */
     mergeRuns: boolean
 }
 
@@ -100,7 +102,7 @@ export interface TransformStats {
     digestedTurns: number
     /** Topic axis (#27): M-zone turns deepened to the distant digest treatment. */
     offTopicTurns: number
-    /** Validity axis (#25/#26): runs merged into one surviving call. */
+    /** Validity axis (#25/#26/#28): runs merged into one surviving call. */
     mergedRuns: number
     /** Whole tool parts actually removed (never-empty adjustments included). */
     excisedParts: number
@@ -406,14 +408,14 @@ interface MergePlan {
 }
 
 /**
- * Validity-axis merge planning (#25/#26): resolves same-target artifact runs
- * and strictly adjacent same-tool error chains over the D/M tool-descriptor
- * sequence and computes everything the rest of the pipeline needs —
- * pre-excision D-zone digests, per-message excision sets, and the M-zone
- * survivor injections. Returns undefined when nothing merges, restoring the
- * pre-merge code path byte for byte. The descriptor scan covers head turns
- * [0, cStart) only, so C/T parts can never enter a run and drops can only
- * map back to D/M messages.
+ * Validity-axis merge planning (#25/#26/#28): resolves same-target artifact
+ * runs, strictly adjacent same-tool error chains, and byte-identical duplicate
+ * calls over the D/M tool-descriptor sequence and computes everything the rest
+ * of the pipeline needs — pre-excision D-zone digests, per-message excision
+ * sets, and the M-zone survivor injections. Returns undefined when nothing
+ * merges, restoring the pre-merge code path byte for byte. The descriptor scan
+ * covers head turns [0, cStart) only, so C/T parts can never enter a run and
+ * drops can only map back to D/M messages.
  */
 function planMergeRuns(
     messages: MessageLike[],
@@ -455,10 +457,16 @@ function planMergeRuns(
         }
     }
     if (seq.length === 0) return undefined
-    // #26 wires error runs alongside the artifacts; the duplicate detector
-    // drops in later (#28) by appending its array here. resolveRuns owns the
-    // priority: a run overlapping a higher-priority one is dropped whole.
-    const resolved = resolveRuns(seq, findArtifactRuns(seq), findErrorRuns(seq), [])
+    // #26 wires error runs alongside the artifacts; #28 appends the duplicate
+    // detector: byte-identical (tool, stable input hash) calls at any
+    // distance, turn boundaries allowed (D8). resolveRuns owns the priority:
+    // a run overlapping a higher-priority one is dropped whole.
+    const resolved = resolveRuns(
+        seq,
+        findArtifactRuns(seq),
+        findErrorRuns(seq),
+        findDuplicateRuns(seq),
+    )
     if (resolved.drops.size === 0) return undefined
 
     // Digests must be computed BEFORE the excision: the D-zone digest carries

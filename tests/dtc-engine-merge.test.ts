@@ -19,7 +19,12 @@ import {
  * parts are excised; C/T zones and message structure stay inviolate.
  * Issue #26 wires the #24 error-run detector into the same seam: strictly
  * adjacent same-tool error chains merge under the same zone semantics, with
- * resolveRuns enforcing artifact > error mutual exclusion.
+ * resolveRuns enforcing artifact > error mutual exclusion. Issue #28 wires the
+ * #24 duplicate-run detector into the third slot: byte-identical repeated calls
+ * (same tool + same stable input hash) at any distance, turn boundaries allowed
+ * (D8), dedup to the LAST occurrence — resolveRuns owns the priority so
+ * adjacent duplicates already absorbed by artifact/error runs leave the
+ * duplicate run skipped whole.
  */
 
 function harness(options: { contextTokens?: number; config?: Partial<typeof DTC_DEFAULTS> } = {}) {
@@ -561,6 +566,170 @@ test("mergeRuns: false: error chains keep the pre-merge skeleton behavior byte f
         assert.ok(!JSON.stringify(state.input).includes("_merged"), "no meta without merging")
     }
     assert.ok(stats.foldedErrors >= 4)
+})
+
+test("#28: cross-turn byte-identical duplicates dedup to the LAST occurrence end-to-end", () => {
+    const messages = buildTurns30()
+    const grepInput = { pattern: "handleUpload", path: "/src/upload.ts" }
+    const dAssistant = messages[1]!
+    dAssistant.parts!.push(
+        toolPart({ tool: "grep", output: "match at 12", input: { ...grepInput } }),
+    )
+    const mAssistant = messages[13]!
+    mAssistant.parts!.push(
+        toolPart({ tool: "grep", output: "match at 12", input: { ...grepInput } }),
+    )
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2, "tiny window must escalate into the M band")
+    assert.equal(stats.mergedRuns, 1)
+    assert.equal(stats.excisedParts, 1)
+    assert.equal(dAssistant.parts!.length, 3, "the earlier D occurrence is excised whole")
+    assert.equal(mAssistant.parts!.length, 4, "the M-zone survivor stays")
+    const survivor = mAssistant.parts![3]!
+    assert.equal(survivor.tool, "grep")
+    assert.deepEqual(survivor.state!.input, {
+        pattern: "handleUpload",
+        path: "/src/upload.ts",
+        _merged: "grep×2",
+    })
+})
+
+test("#28: adjacent identical calls ride the higher-priority artifact/error runs — duplicate yields whole", () => {
+    const messages = buildTurns30()
+    // M turn 6: two byte-identical edits on one target — the artifact run
+    // absorbs them; the duplicate run over the same indices yields whole.
+    messages[13]!.parts = [
+        toolPart({
+            tool: "edit",
+            output: "ok",
+            input: { filePath: "/src/same.ts", oldString: "a", newString: "b" },
+        }),
+        toolPart({
+            tool: "edit",
+            output: "ok",
+            input: { filePath: "/src/same.ts", oldString: "a", newString: "b" },
+        }),
+    ]
+    // M turn 7: two byte-identical bash errors — the error run absorbs them.
+    messages[15]!.parts = [
+        toolPart({
+            tool: "bash",
+            status: "error",
+            error: "boom\nstack",
+            input: { command: "make ci" },
+        }),
+        toolPart({
+            tool: "bash",
+            status: "error",
+            error: "boom\nstack",
+            input: { command: "make ci" },
+        }),
+    ]
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    assert.equal(stats.mergedRuns, 2, "artifact + error kept; both duplicate runs skipped")
+    assert.equal(stats.excisedParts, 2)
+    assert.equal(messages[13]!.parts!.length, 1)
+    assert.deepEqual(messages[13]!.parts![0]!.state!.input, {
+        filePath: "/src/same.ts",
+        _merged: "edit×2",
+    })
+    assert.equal(messages[15]!.parts!.length, 1)
+    assert.deepEqual(messages[15]!.parts![0]!.state!.input, {
+        command: "make ci",
+        _merged: "bash×2 (2 err), first: boom",
+    })
+})
+
+test("#28: a single occurrence with no D/M partner never merges and stays meta-free", () => {
+    const messages = buildTurns30()
+    messages[13]!.parts = [
+        toolPart({ tool: "grep", output: "m", input: { pattern: "only", path: "/src/one.ts" } }),
+    ]
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    assert.equal(stats.mergedRuns, 0)
+    assert.equal(stats.excisedParts, 0)
+    assert.equal(messages[13]!.parts!.length, 1, "nothing is excised")
+    assert.equal((messages[13]!.parts![0]!.state!.input as any)._merged, undefined)
+})
+
+test("#28: C/T red line — byte-identical calls touching C never dedup; C stays byte-identical", () => {
+    const messages = buildTurns30()
+    const grepInput = { pattern: "same", path: "/src/boundary.ts" }
+    // Last M turn (messages[35]) and first C turn (messages[37]) share a
+    // byte-identical call across the boundary — the scan bound keeps C out.
+    messages[35]!.parts = [toolPart({ tool: "grep", output: "m-side", input: { ...grepInput } })]
+    // An identical pair inside C is invisible to the detector by construction.
+    messages[37]!.parts = [
+        toolPart({ tool: "grep", output: "c1", input: { ...grepInput } }),
+        toolPart({ tool: "grep", output: "c2", input: { ...grepInput } }),
+    ]
+    const cBefore = deepCloneMessages(messages.slice(36, 52))
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 3)
+    assert.equal(stats.mergedRuns, 0, "no duplicate run may reach into or cross into C")
+    assert.equal(stats.excisedParts, 0)
+    assert.deepEqual(deepCloneMessages(messages.slice(36, 52)), cBefore, "C bytes stay untouched")
+    assert.equal(messages[35]!.parts!.length, 1, "the M-side occurrence keeps its partnerless call")
+})
+
+test("#28: mergeRuns: false leaves cross-turn duplicates as pure folded skeletons", () => {
+    const messages = buildTurns30()
+    const grepInput = { pattern: "dup", path: "/src/twin.ts" }
+    messages[1]!.parts!.push(toolPart({ tool: "grep", output: "d", input: { ...grepInput } }))
+    messages[13]!.parts!.push(toolPart({ tool: "grep", output: "m", input: { ...grepInput } }))
+    const h = harness({ contextTokens: 100, config: { mergeRuns: false } })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    assert.equal(stats.mergedRuns, 0)
+    assert.equal(stats.excisedParts, 0)
+    assert.equal(messages[1]!.parts!.length, 4, "nothing is excised")
+    assert.equal(messages[13]!.parts!.length, 4)
+    const dGrep = messages[1]!.parts![3]!
+    const mGrep = messages[13]!.parts![3]!
+    assert.deepEqual(dGrep.state!.input, {}, "the distant copy still clears via folding")
+    assert.deepEqual(
+        mGrep.state!.input,
+        { pattern: "dup", path: "/src/twin.ts" },
+        "middle skeleton",
+    )
+    assert.ok(!JSON.stringify(messages).includes("_merged"), "no meta without merging")
+})
+
+test("#28: D-zone duplicate survivor stays meta-free; the digest counts pre-excision", () => {
+    const pristine = buildTurns30()
+    const grepInput = { pattern: "dig", path: "/src/dz.ts" }
+    // Two identical greps in D turn 0 plus a third in D turn 1: one duplicate
+    // run of three, survivor = the LAST occurrence (turn 1) per D8.
+    pristine[1]!.parts!.push(
+        toolPart({ tool: "grep", output: "a", input: { ...grepInput } }),
+        toolPart({ tool: "grep", output: "b", input: { ...grepInput } }),
+    )
+    pristine[3]!.parts!.push(toolPart({ tool: "grep", output: "c", input: { ...grepInput } }))
+    const first = deepCloneMessages(pristine)
+    const second = deepCloneMessages(pristine)
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(first)
+    assert.equal(stats.mergedRuns, 1)
+    assert.equal(stats.excisedParts, 2)
+    const digest = String(first[0]!.parts![0]!.text)
+    assert.match(digest, /grep×2/, "turn 0's digest counts its pre-excision pair")
+    const turn0Tools = (first[1]!.parts ?? []).filter((p) => p?.type === "tool")
+    const turn1Tools = (first[3]!.parts ?? []).filter((p) => p?.type === "tool")
+    assert.equal(turn0Tools.length, 1, "both earlier occurrences are excised cross-turn")
+    assert.equal(turn1Tools.length, 2, "the LAST occurrence survives in its own turn")
+    assert.deepEqual(turn1Tools[1]!.state!.input, {}, "distant survivor input clears; no meta in D")
+    h.run(second)
+    assert.equal(
+        String(second[0]!.parts![0]!.text),
+        digest,
+        "identical pre-excision shape → identical digest",
+    )
 })
 
 function buildTurns30(
