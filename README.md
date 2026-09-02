@@ -89,7 +89,7 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
 
 ## 从 3.x / 4.0 迁移
 
-3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；4.1 起 `language` 与 `experimental.customPrompts` 也已删除——DCP 不再替换宿主压缩提示词，`dcp-prompts` 覆盖机制随之退役。这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
+3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；5.0 起 `language` 与 `experimental.customPrompts` 也已删除——DCP 不再替换宿主压缩提示词，`dcp-prompts` 覆盖机制随之退役。这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
 
 行为变化：压缩不再产生可见的"检查点回合"，也不再需要任何静息边界或续跑机制——上下文折叠在每次请求内自动完成，会话与状态机零感知。语义检查点完全交还宿主原生 compaction（手动 `/compact` 或溢出兜底）：原生提示词、原生滚动合并，DCP 仅贡献尾部保护默认值与摘要输入的全保真保护。
 

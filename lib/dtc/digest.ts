@@ -144,6 +144,7 @@ export function estimateSlice(messages: MessageLike[], start: number, end: numbe
             }
             if (typeof state.output === "string") tokens += estimateTokens(state.output)
             if (state.input) tokens += estimateTokens(JSON.stringify(state.input))
+            if (typeof state.error === "string") tokens += estimateTokens(state.error)
         }
     }
     return tokens

@@ -176,6 +176,39 @@ test("a manual boundary mark deepens folding even below the low watermark", () =
     assert.ok(mTool.state?.time?.compacted)
 })
 
+test("a manual minimum level folds every band up to it, distant zone included", () => {
+    // 30 turns → head 26; mark at t=25000 → markStart 25 → cStart 25,
+    // mStart 13 → D = [0,13) must digest even though folding starts at 2.
+    const messages = buildTurns(30, { toolOutputChars: 200, textChars: 100 })
+    const h = harness({ contextTokens: 1_000_000 })
+    h.state.markBoundary("ses_test", 25 * 1000, 2)
+    const stats = h.run(messages)
+    assert.equal(stats.level, 2)
+    assert.ok(stats.digestedTurns >= 13, "distant band folds when starting at level 2")
+    const dTool = messages[1]!.parts!.find((p) => p.type === "tool")!
+    assert.ok(dTool.state?.time?.compacted, "distant tool folded")
+    const mTool = messages[27]!.parts!.find((p) => p.type === "tool")!
+    assert.ok(mTool.state?.time?.compacted, "middle tool folded")
+    // Band 3 never runs at level 2: the current zone stays raw.
+    const cTool = messages[51]!.parts!.find((p) => p.type === "tool")!
+    assert.equal(cTool.state?.time?.compacted, undefined)
+    assert.ok(String(cTool.state?.output).length >= 200)
+})
+
+test("the deepest manual level (3) folds distant, middle, and current bands", () => {
+    const messages = buildTurns(30, { toolOutputChars: 200, textChars: 100 })
+    const h = harness({ contextTokens: 1_000_000 })
+    h.state.markBoundary("ses_test", 25 * 1000, 3)
+    const stats = h.run(messages)
+    assert.equal(stats.level, 3)
+    assert.ok(stats.digestedTurns >= 13, "distant band folds when starting at level 3")
+    const mTool = messages[27]!.parts!.find((p) => p.type === "tool")!
+    assert.ok(mTool.state?.time?.compacted)
+    // Tail stays untouched at every level.
+    const tTool = messages[53]!.parts!.find((p) => p.type === "tool")!
+    assert.equal(tTool.state?.time?.compacted, undefined)
+})
+
 test("digests are deterministic and cached across requests", () => {
     const h = harness({ contextTokens: 100 })
     const first = buildTurns(30, { toolOutputChars: 500, textChars: 200 })
