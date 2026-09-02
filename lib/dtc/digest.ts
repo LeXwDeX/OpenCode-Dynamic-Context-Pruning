@@ -45,7 +45,10 @@ function toolSummary(parts: PartLike[]): { actions: string; files: string; error
     return { actions, files: files.slice(0, MAX_FILES).join(" "), errors }
 }
 
-/** Builds the one-block digest that replaces a distant turn's content. */
+/** Builds the one-block digest that replaces a distant turn's content.
+ * Contract: callers must digest BEFORE any merge excision — keys and the
+ * counts inside the digest are pre-excision shapes by definition (`edit×3`
+ * never shrinks to `edit×1`). */
 export function digestTurn(messages: MessageLike[], turn: Turn, index: number): string {
     const slice = messages.slice(turn.start, turn.end)
     const user = slice[0]

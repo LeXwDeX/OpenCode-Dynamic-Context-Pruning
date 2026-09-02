@@ -1,6 +1,14 @@
 import type { Logger } from "../logger"
 import { firstLine, truncateMiddle } from "../text"
 import { digestKey, digestTurn, estimateSlice, findTopicBoundaries } from "./digest"
+import {
+    exciseItems,
+    extractTarget,
+    findArtifactRuns,
+    resolveRuns,
+    stableInputHash,
+    type MergeItem,
+} from "./merge"
 import type { DtcState } from "./state"
 import type { MessageLike, PartLike, Turn } from "./types"
 
@@ -9,8 +17,12 @@ import type { MessageLike, PartLike, Turn } from "./types"
  * `experimental.chat.messages.transform` hook on every model request and
  * rewrites ONLY string payloads of the request-scoped message copies:
  *
- * - messages and parts are never added, removed, or reordered
- * - part IDs, tool-call pairing, and roles are never touched
+ * - messages are never added, removed, or reordered; part IDs, roles, and
+ *   tool-call pairing are never touched
+ * - the one structural exception is validity-axis merging (#25): inside the
+ *   D/M zones, same-target operation runs collapse to a single surviving
+ *   tool part — whole parts are excised, a message is never emptied, and
+ *   the C/T zones are exempt
  * - distant tool outputs are folded with the host's own `time.compacted`
  *   marker, so the wire rendering is the host's native one
  *
@@ -29,8 +41,9 @@ export interface DtcConfig {
     driftThreshold: number
     /** C-zone tool outputs are head+tail truncated to this many characters. */
     toolOutputKeepChars: number
-    /** Validity axis (#23): M/D zones merge repeated/failed tool runs into one
-     * surviving call (`_merged` meta carries the counts). Wired in #25–#28. */
+    /** Validity axis (#25): M/D same-target artifact runs merge into one
+     * surviving call (`_merged` meta carries the counts). Error and
+     * duplicate runs land with #26/#28. */
     mergeRuns: boolean
 }
 
@@ -75,6 +88,10 @@ export interface TransformStats {
     reducedInputs: number
     foldedErrors: number
     digestedTurns: number
+    /** Validity axis (#25): artifact runs merged into one surviving call. */
+    mergedRuns: number
+    /** Whole tool parts actually removed (never-empty adjustments included). */
+    excisedParts: number
     skipped: "short" | "unknown-context" | "compaction" | undefined
 }
 
@@ -90,6 +107,8 @@ const NO_STATS: TransformStats = {
     reducedInputs: 0,
     foldedErrors: 0,
     digestedTurns: 0,
+    mergedRuns: 0,
+    excisedParts: 0,
     skipped: undefined,
 }
 
@@ -159,6 +178,26 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const zones = computeZones(messages, headTurns, sessionID, state, config)
     const now = (deps.now ?? Date.now)()
 
+    // Validity axis (#25): same-target artifact runs in the D/M zones merge
+    // BEFORE any folding, so band 1 digests and the escalation estimate both
+    // see the excised shape. Failure skips only the merge — folding proceeds.
+    let mergeDigests: Map<number, string> | undefined
+    let mergeInjections: SurvivorInjection[] = []
+    if (config.mergeRuns) {
+        try {
+            const plan = planArtifactMerge(messages, headTurns, zones, deps)
+            if (plan) {
+                applyMergeExcision(plan, stats)
+                mergeDigests = plan.digests
+                mergeInjections = plan.injections
+            }
+        } catch (error) {
+            deps.logger?.warn("DTC merge phase failed; folding continues", {
+                error: String(error),
+            })
+        }
+    }
+
     let level = Math.max(1, minLevel) as FoldLevel
     // Bands apply cumulatively: a manual minimum level can start at 2 or 3,
     // and every band below it must still fold — starting high never skips the
@@ -167,7 +206,7 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const applyUpTo = (lvl: FoldLevel): void => {
         while (appliedBand < lvl) {
             appliedBand++
-            applyBand(messages, headTurns, zones, appliedBand, deps, stats, now)
+            applyBand(messages, headTurns, zones, appliedBand, deps, stats, now, mergeDigests)
         }
     }
     applyUpTo(level)
@@ -177,6 +216,11 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
         applyUpTo(level)
         estimatedAfter = estimateSlice(messages, 0, messages.length)
     }
+
+    // `_merged` meta lands only once band 2 has run (level >= 2): the meta
+    // composes with the reduced skeleton, never with raw payloads. Level-1
+    // requests excise but stay meta-free — validity ⊥ depth by design.
+    if (level >= 2) injectMergeMetas(mergeInjections)
 
     stats.level = level
     stats.estimatedAfter = estimatedAfter
@@ -192,6 +236,8 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
         reducedInputs: stats.reducedInputs,
         foldedErrors: stats.foldedErrors,
         digestedTurns: stats.digestedTurns,
+        mergedRuns: stats.mergedRuns,
+        excisedParts: stats.excisedParts,
     })
     return stats
 }
@@ -243,10 +289,11 @@ function applyBand(
     deps: TransformDeps,
     stats: TransformStats,
     now: number,
+    mergeDigests?: Map<number, string>,
 ): void {
     if (band === 1) {
         for (let t = 0; t < zones.mStart; t++) {
-            foldDistant(messages, headTurns[t]!, t + 1, deps, stats, now)
+            foldDistant(messages, headTurns[t]!, t + 1, deps, stats, now, mergeDigests?.get(t))
         }
     } else if (band === 2) {
         for (let t = zones.mStart; t < zones.cStart; t++) {
@@ -259,6 +306,148 @@ function applyBand(
     }
 }
 
+/** A survivor awaiting its `_merged` meta once band 2 has run. */
+interface SurvivorInjection {
+    part: PartLike
+    meta: string
+}
+
+interface MergePlan {
+    /** Pre-excision D-zone digests keyed by head-turn index (band 1 input). */
+    digests: Map<number, string>
+    /** M-zone survivors; injected after escalation when level >= 2. */
+    injections: SurvivorInjection[]
+    /** Whole tool parts to excise, grouped per message as local indices. */
+    excisions: Array<{ message: MessageLike; localDrops: Set<number> }>
+    keptRuns: number
+}
+
+/**
+ * Validity-axis merge planning (#25): resolves same-target artifact runs
+ * over the D/M tool-descriptor sequence and computes everything the rest of
+ * the pipeline needs — pre-excision D-zone digests, per-message excision
+ * sets, and the M-zone survivor injections. Returns undefined when nothing
+ * merges, restoring the pre-merge code path byte for byte. The descriptor
+ * scan covers head turns [0, cStart) only, so C/T parts can never enter a
+ * run and drops can only map back to D/M messages.
+ */
+function planArtifactMerge(
+    messages: MessageLike[],
+    headTurns: Turn[],
+    zones: Zones,
+    deps: TransformDeps,
+): MergePlan | undefined {
+    const seq: MergeItem[] = []
+    const records: Array<{
+        part: PartLike
+        message: MessageLike
+        localIndex: number
+        turn: number
+    }> = []
+    for (let t = 0; t < zones.cStart && t < headTurns.length; t++) {
+        const turn = headTurns[t]!
+        for (let i = turn.start; i < turn.end && i < messages.length; i++) {
+            const message = messages[i]
+            const parts = message?.parts
+            if (!Array.isArray(parts)) continue
+            for (let localIndex = 0; localIndex < parts.length; localIndex++) {
+                const part = parts[localIndex]
+                if (!part || typeof part !== "object" || part.type !== "tool") continue
+                const state = part.state
+                if (!state || typeof state !== "object") continue
+                const status = String(state.status ?? "")
+                seq.push({
+                    tool: String(part.tool ?? "tool"),
+                    status,
+                    isError: status === "error",
+                    target: extractTarget(state.input),
+                    inputHash: stableInputHash(state.input),
+                    turn: t,
+                    errLine:
+                        typeof state.error === "string" ? firstLine(state.error, 200) : undefined,
+                })
+                records.push({ part, message, localIndex, turn: t })
+            }
+        }
+    }
+    if (seq.length === 0) return undefined
+    // #25 wires artifact runs only; error/duplicate detectors drop in later
+    // (#26/#28) by appending their arrays here.
+    const resolved = resolveRuns(seq, findArtifactRuns(seq), [], [])
+    if (resolved.drops.size === 0) return undefined
+
+    // Digests must be computed BEFORE the excision: the D-zone digest carries
+    // pre-merge counts (`edit×3`, never `edit×1`), and because the host
+    // rebuilds the array pre-excision on every request, keys taken at this
+    // same shape stay stable across requests.
+    const digests = new Map<number, string>()
+    for (let t = 0; t < zones.mStart; t++) {
+        const turn = headTurns[t]!
+        const key = digestKey(messages, turn)
+        let digest = deps.state.cachedDigest(key)
+        if (digest === undefined) {
+            digest = digestTurn(messages, turn, t + 1)
+            deps.state.storeDigest(key, digest)
+        }
+        digests.set(t, digest)
+    }
+
+    const excisionMap = new Map<MessageLike, Set<number>>()
+    for (let index = 0; index < records.length; index++) {
+        if (!resolved.drops.has(index)) continue
+        const record = records[index]!
+        let localDrops = excisionMap.get(record.message)
+        if (!localDrops) {
+            localDrops = new Set<number>()
+            excisionMap.set(record.message, localDrops)
+        }
+        localDrops.add(record.localIndex)
+    }
+    const injections: SurvivorInjection[] = []
+    for (const [survivor, meta] of resolved.metas) {
+        const record = records[survivor]!
+        // D-zone survivors stay injection-free: their inputs are cleared and
+        // the counts live in the digest; only M-zone survivors carry `_merged`.
+        if (record.turn >= zones.mStart) injections.push({ part: record.part, meta })
+    }
+    return {
+        digests,
+        injections,
+        excisions: [...excisionMap].map(([message, localDrops]) => ({ message, localDrops })),
+        keptRuns: resolved.runs.length,
+    }
+}
+
+/** Applies the plan's excisions: whole tool parts leave the request copy,
+ * never-empty per message; counters record what actually left. */
+function applyMergeExcision(plan: MergePlan, stats: TransformStats): void {
+    for (const { message, localDrops } of plan.excisions) {
+        const parts = message.parts
+        if (!Array.isArray(parts)) continue
+        const before = parts.length
+        const kept = exciseItems(parts, localDrops)
+        message.parts = kept
+        stats.excisedParts += before - kept.length
+    }
+    stats.mergedRuns = plan.keptRuns
+}
+
+/** Injects `_merged` meta into M-zone survivor inputs after band 2 has run
+ * (level >= 2). Runs never cross zone lines, so a survivor's own zone
+ * decides injection; conflict with a pre-existing `_merged` key is impossible
+ * because `reduceInput` never copies unknown keys. */
+function injectMergeMetas(injections: SurvivorInjection[]): void {
+    for (const { part, meta } of injections) {
+        const state = part.state
+        if (!state || typeof state !== "object") continue
+        const input = state.input
+        state.input = {
+            ...(input && typeof input === "object" ? input : {}),
+            _merged: meta,
+        }
+    }
+}
+
 function foldDistant(
     messages: MessageLike[],
     turn: Turn,
@@ -266,12 +455,19 @@ function foldDistant(
     deps: TransformDeps,
     stats: TransformStats,
     now: number,
+    precomputed?: string,
 ): void {
-    const key = digestKey(messages, turn)
-    let digest = deps.state.cachedDigest(key)
+    // When the merge phase precomputed this digest (pre-excision shape), the
+    // cache round-trip already happened there; consuming it keeps the digest
+    // identical while `digestedTurns` still counts exactly once per D turn.
+    let digest = precomputed
     if (digest === undefined) {
-        digest = digestTurn(messages, turn, ordinal)
-        deps.state.storeDigest(key, digest)
+        const key = digestKey(messages, turn)
+        digest = deps.state.cachedDigest(key)
+        if (digest === undefined) {
+            digest = digestTurn(messages, turn, ordinal)
+            deps.state.storeDigest(key, digest)
+        }
     }
     stats.digestedTurns++
 
