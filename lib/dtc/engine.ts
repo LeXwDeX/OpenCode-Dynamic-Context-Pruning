@@ -5,6 +5,7 @@ import {
     exciseItems,
     extractTarget,
     findArtifactRuns,
+    findErrorRuns,
     resolveRuns,
     stableInputHash,
     type MergeItem,
@@ -19,10 +20,10 @@ import type { MessageLike, PartLike, Turn } from "./types"
  *
  * - messages are never added, removed, or reordered; part IDs, roles, and
  *   tool-call pairing are never touched
- * - the one structural exception is validity-axis merging (#25): inside the
- *   D/M zones, same-target operation runs collapse to a single surviving
- *   tool part — whole parts are excised, a message is never emptied, and
- *   the C/T zones are exempt
+ * - the one structural exception is validity-axis merging (#25, #26): inside
+ *   the D/M zones, same-target operation runs and strictly adjacent same-tool
+ *   error chains collapse to a single surviving tool part — whole parts are
+ *   excised, a message is never emptied, and the C/T zones are exempt
  * - distant tool outputs are folded with the host's own `time.compacted`
  *   marker, so the wire rendering is the host's native one
  *
@@ -41,9 +42,9 @@ export interface DtcConfig {
     driftThreshold: number
     /** C-zone tool outputs are head+tail truncated to this many characters. */
     toolOutputKeepChars: number
-    /** Validity axis (#25): M/D same-target artifact runs merge into one
-     * surviving call (`_merged` meta carries the counts). Error and
-     * duplicate runs land with #26/#28. */
+    /** Validity axis (#25/#26): M/D same-target artifact runs and adjacent
+     * same-tool error chains merge into one surviving call (`_merged` meta
+     * carries the counts). Duplicate runs land with #28. */
     mergeRuns: boolean
 }
 
@@ -88,7 +89,7 @@ export interface TransformStats {
     reducedInputs: number
     foldedErrors: number
     digestedTurns: number
-    /** Validity axis (#25): artifact runs merged into one surviving call. */
+    /** Validity axis (#25/#26): runs merged into one surviving call. */
     mergedRuns: number
     /** Whole tool parts actually removed (never-empty adjustments included). */
     excisedParts: number
@@ -178,14 +179,15 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const zones = computeZones(messages, headTurns, sessionID, state, config)
     const now = (deps.now ?? Date.now)()
 
-    // Validity axis (#25): same-target artifact runs in the D/M zones merge
-    // BEFORE any folding, so band 1 digests and the escalation estimate both
-    // see the excised shape. Failure skips only the merge — folding proceeds.
+    // Validity axis (#25/#26): artifact and error runs in the D/M zones
+    // merge BEFORE any folding, so band 1 digests and the escalation estimate
+    // both see the excised shape. Failure skips only the merge — folding
+    // proceeds.
     let mergeDigests: Map<number, string> | undefined
     let mergeInjections: SurvivorInjection[] = []
     if (config.mergeRuns) {
         try {
-            const plan = planArtifactMerge(messages, headTurns, zones, deps)
+            const plan = planMergeRuns(messages, headTurns, zones, deps)
             if (plan) {
                 applyMergeExcision(plan, stats)
                 mergeDigests = plan.digests
@@ -323,15 +325,16 @@ interface MergePlan {
 }
 
 /**
- * Validity-axis merge planning (#25): resolves same-target artifact runs
- * over the D/M tool-descriptor sequence and computes everything the rest of
- * the pipeline needs — pre-excision D-zone digests, per-message excision
- * sets, and the M-zone survivor injections. Returns undefined when nothing
- * merges, restoring the pre-merge code path byte for byte. The descriptor
- * scan covers head turns [0, cStart) only, so C/T parts can never enter a
- * run and drops can only map back to D/M messages.
+ * Validity-axis merge planning (#25/#26): resolves same-target artifact runs
+ * and strictly adjacent same-tool error chains over the D/M tool-descriptor
+ * sequence and computes everything the rest of the pipeline needs —
+ * pre-excision D-zone digests, per-message excision sets, and the M-zone
+ * survivor injections. Returns undefined when nothing merges, restoring the
+ * pre-merge code path byte for byte. The descriptor scan covers head turns
+ * [0, cStart) only, so C/T parts can never enter a run and drops can only
+ * map back to D/M messages.
  */
-function planArtifactMerge(
+function planMergeRuns(
     messages: MessageLike[],
     headTurns: Turn[],
     zones: Zones,
@@ -371,9 +374,10 @@ function planArtifactMerge(
         }
     }
     if (seq.length === 0) return undefined
-    // #25 wires artifact runs only; error/duplicate detectors drop in later
-    // (#26/#28) by appending their arrays here.
-    const resolved = resolveRuns(seq, findArtifactRuns(seq), [], [])
+    // #26 wires error runs alongside the artifacts; the duplicate detector
+    // drops in later (#28) by appending its array here. resolveRuns owns the
+    // priority: a run overlapping a higher-priority one is dropped whole.
+    const resolved = resolveRuns(seq, findArtifactRuns(seq), findErrorRuns(seq), [])
     if (resolved.drops.size === 0) return undefined
 
     // Digests must be computed BEFORE the excision: the D-zone digest carries
@@ -435,11 +439,14 @@ function applyMergeExcision(plan: MergePlan, stats: TransformStats): void {
 /** Injects `_merged` meta into M-zone survivor inputs after band 2 has run
  * (level >= 2). Runs never cross zone lines, so a survivor's own zone
  * decides injection; conflict with a pre-existing `_merged` key is impossible
- * because `reduceInput` never copies unknown keys. */
+ * because `reduceInput` never copies unknown keys. Only terminal states
+ * (completed/error) carry meta — in-flight parts are not merge results. */
 function injectMergeMetas(injections: SurvivorInjection[]): void {
     for (const { part, meta } of injections) {
         const state = part.state
         if (!state || typeof state !== "object") continue
+        const status = String(state.status ?? "")
+        if (status !== "completed" && status !== "error") continue
         const input = state.input
         state.input = {
             ...(input && typeof input === "object" ? input : {}),
