@@ -78,13 +78,22 @@ test("under the low watermark nothing is folded even with many turns", () => {
     assert.deepEqual(messages, before)
 })
 
-test("structural invariant: folding never adds, removes, or reorders messages or parts", () => {
+test("structural invariant: messages never change; parts shrink only by D/M tool-part excision", () => {
     const messages = buildTurns(30, { toolOutputChars: 3000, textChars: 400 })
     const structureBefore = snapshotStructure(messages)
     const h = harness({ contextTokens: 2000 })
     const stats = h.run(messages)
     assert.ok(stats.level >= 1, "must actually fold under pressure")
+    // bash-only sessions form no runs: with zero excisions the structure is
+    // byte-identical. The run-scenario variant of this rule lives in
+    // tests/dtc-engine-merge.test.ts.
+    assert.equal(stats.mergedRuns, 0)
+    assert.equal(stats.excisedParts, 0)
     assert.equal(snapshotStructure(messages), structureBefore)
+    // red line independent of runs: no message is ever emptied
+    for (const message of messages) {
+        assert.ok((message.parts ?? []).length > 0)
+    }
 })
 
 test("the protected tail is never touched at any fold level", () => {
@@ -263,66 +272,6 @@ test("error-state tool parts are never folded in the protected tail", () => {
     assert.equal(state.time?.compacted, undefined)
     assert.match(String(state.error), /^ boom line1\nstack/, "tail error text untouched")
     assert.equal((state.input as any).oldString.length, 500)
-})
-
-test("repeated same-file edits with failures collapse to skeletons in the middle zone", () => {
-    // 30 turns → head 26; zones: D=[0,6), M=[6,18), C=[18,26)
-    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
-    const mAssistant = messages[13] // head turn ordinal 6 → first M turn's assistant
-    mAssistant!.parts = [
-        toolPart({
-            tool: "edit",
-            status: "error",
-            error: `oldString not found\n${"detail ".repeat(300)}`,
-            input: {
-                filePath: "/src/dup.ts",
-                oldString: "o".repeat(2000),
-                newString: "n".repeat(2000),
-            },
-        }),
-        toolPart({
-            tool: "edit",
-            status: "error",
-            error: `found multiple matches\n${"detail ".repeat(300)}`,
-            input: {
-                filePath: "/src/dup.ts",
-                oldString: "p".repeat(2000),
-                newString: "q".repeat(2000),
-            },
-        }),
-        toolPart({
-            tool: "edit",
-            output: "edit applied",
-            input: {
-                filePath: "/src/dup.ts",
-                oldString: "r".repeat(2000),
-                newString: "s".repeat(2000),
-            },
-        }),
-    ]
-    const structureBefore = snapshotStructure(messages)
-    const h = harness({ contextTokens: 100 })
-    const stats = h.run(messages)
-    assert.ok(stats.level >= 2)
-    assert.equal(snapshotStructure(messages), structureBefore, "structure untouched")
-
-    const [err1, err2, ok] = mAssistant!.parts!
-    // failed attempts: short single-line error, payload-free skeleton input
-    for (const part of [err1, err2]) {
-        const state = part.state!
-        assert.ok(String(state.error).length <= 201, "error folds to a short line")
-        assert.ok(!String(state.error).includes("\n"), "error keeps only the first line")
-        assert.deepEqual(state.input, { filePath: "/src/dup.ts" })
-    }
-    // successful attempt: host-native output marker + skeleton input
-    assert.ok(ok!.state!.time?.compacted, "completed edit gets the host fold marker")
-    assert.deepEqual(ok!.state!.input, { filePath: "/src/dup.ts" })
-    assert.ok(stats.reducedInputs >= 3)
-    assert.ok(stats.foldedErrors >= 2)
-    // net semantic: three calls on one file, zero stale payloads anywhere
-    const serialized = JSON.stringify(mAssistant!.parts)
-    assert.ok(!serialized.includes("oooo"))
-    assert.ok(!serialized.includes("detail detail"))
 })
 
 test("middle-zone bash commands keep a short first line only", () => {

@@ -21,14 +21,15 @@ The host fires `experimental.chat.messages.transform` before every model request
 
 - **T tail zone**: the last `dtc.tailTurns` (default 4) conversation turns are **never folded**.
 - **C current-task zone**: turns since the latest topic boundary (lexical drift detection); only oversized tool outputs are head+tail truncated, task details survive.
-- **M middle zone**: long texts keep their first line; tool outputs get the host's native fold marker (rendered by the host as its own `[Old tool result content cleared]`); **tool arguments reduce to a target skeleton** (only filePath / command first line and friends — `oldString`/`newString`/`content` payloads are dropped); **failed attempts (error parts) fold to a short first line** — three edits on one file with two failures collapse to three recognizable call skeletons plus two single-line errors, with the final state owned by disk and the current-task zone; reasoning is emptied.
+- **M middle zone**: long texts keep their first line; tool outputs get the host's native fold marker (rendered by the host as its own `[Old tool result content cleared]`); **tool arguments reduce to a target skeleton** (only filePath / command first line and friends — `oldString`/`newString`/`content` payloads are dropped); **failed attempts (error parts) fold to a short first line** — three edits on one file with two failures collapse to 1 recognizable call skeleton (`_merged: "edit×3 (2 err)"` carries the counts), with the final state owned by disk and the current-task zone; reasoning is emptied.
 - **D distant zone**: whole turns collapse into one mechanical digest line (intent / actions / files touched / outcome / error count) and tool inputs are cleared — hard facts live on in the digest.
+- **Validity-axis merging (#25)**: same-target operation chains in the M/D zones (`edit`/`read`/`write`/`patch` …, ≤ 2 interleaved other calls, never crossing a turn) merge into 1 surviving call before folding — superseded members are excised as **whole parts** (a message is never emptied) and the survivor's `input` carries `_merged` meta (`edit×3 (2 err)` for same-tool chains, `ops×3` for mixed ones); D-zone digests carry **pre-merge** counts. Zero deletions in C/T.
 
 **Dynamic budget**: below `lowWatermarkRatio` of the context window (default 50%) **nothing is folded at all** — short sessions pay zero cost. Above it, folding escalates D→M→C from the far end until the estimate fits `targetRatio` (default 70%). The window size is learned per session from the `chat.params` hook; until it is known the engine fails open (no folding). Session attribution reads `sessionID` straight off the message payload on official hosts; on fork hosts that strip message IDs into database columns, DTC falls back to a `chat.params`-recorded "user-message timestamp → session" index (content-keyed, so concurrent sessions never cross-attribute; a session's very first request has no record yet and skips folding).
 
 **Three structural laws** (the constructive exclusion of the old versions' "lost markers" failure):
 
-1. Messages and parts are never added, removed, or reordered; IDs never change — tool-call/tool-result pairing cannot break;
+1. Messages are never added, removed, or reordered; IDs never change — tool-call/tool-result pairing cannot break; the one exception is validity-axis merging (#25) excising **whole tool parts** in the M/D zones (never emptying a message, C/T zones exempt);
 2. Only string payloads are rewritten (text/output/reasoning), and tool-output folding uses the host's native `time.compacted` marker instead of a custom placeholder protocol;
 3. Every mutation lives in the request-scoped copy only — session history in the database stays byte-identical.
 
@@ -70,6 +71,7 @@ DCP reads these layers in order; later layers override earlier ones:
         "targetRatio": 0.7,
         "driftThreshold": 0.18,
         "toolOutputKeepChars": 4000,
+        "mergeRuns": true,
     },
     "tool": {
         "enabled": true,
@@ -77,15 +79,16 @@ DCP reads these layers in order; later layers override earlier ones:
 }
 ```
 
-| Key                       | Description                                                                                                |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `dtc.enabled`             | Master switch for dynamic tiered request-time compression                                                  |
-| `dtc.tailTurns`           | Turns at the end that are never folded (default 4)                                                         |
-| `dtc.lowWatermarkRatio`   | No folding below window × ratio (default 0.5)                                                              |
-| `dtc.targetRatio`         | Escalate folding until the estimate fits window × ratio (default 0.7)                                      |
-| `dtc.driftThreshold`      | Jaccard similarity below which consecutive user messages start a new current-task zone (0–1, default 0.18) |
-| `dtc.toolOutputKeepChars` | Head+tail characters kept for oversized current-zone tool outputs (default 4000)                           |
-| `tool.enabled`            | Register the model-invokable `dcp_prune` tool (instant boundary mark, never interrupts)                    |
+| Key                       | Description                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `dtc.enabled`             | Master switch for dynamic tiered request-time compression                                                           |
+| `dtc.tailTurns`           | Turns at the end that are never folded (default 4)                                                                  |
+| `dtc.lowWatermarkRatio`   | No folding below window × ratio (default 0.5)                                                                       |
+| `dtc.targetRatio`         | Escalate folding until the estimate fits window × ratio (default 0.7)                                               |
+| `dtc.driftThreshold`      | Jaccard similarity below which consecutive user messages start a new current-task zone (0–1, default 0.18)          |
+| `dtc.toolOutputKeepChars` | Head+tail characters kept for oversized current-zone tool outputs (default 4000)                                    |
+| `dtc.mergeRuns`           | Merge same-target operation chains in M/D into 1 surviving call (validity axis #25, default on; off = pure folding) |
+| `tool.enabled`            | Register the model-invokable `dcp_prune` tool (instant boundary mark, never interrupts)                             |
 
 ## Migrating from 3.x / 4.0
 

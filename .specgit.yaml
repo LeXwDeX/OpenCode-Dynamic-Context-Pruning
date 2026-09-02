@@ -1,8 +1,8 @@
 version: 1
-delivery: 24-merge-foundation
+delivery: 25-artifact-run-merge
 context:
   kind: branch
-  branch: feat/24-merge-foundation
+  branch: feat/25-25-artifact-run-merge
 issues:
-  - 24
-pr: 29
+  - 25
+pr: 30
