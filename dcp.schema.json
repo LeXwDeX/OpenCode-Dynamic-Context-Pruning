@@ -78,6 +78,11 @@
                     "minimum": 200,
                     "default": 4000,
                     "description": "Current-zone tool outputs longer than this are head+tail truncated"
+                },
+                "mergeRuns": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Validity-axis merging: repeated and failed tool runs in the middle/distant zones collapse to one surviving call, with counts kept in a _merged meta key"
                 }
             },
             "default": {
@@ -86,7 +91,8 @@
                 "lowWatermarkRatio": 0.5,
                 "targetRatio": 0.7,
                 "driftThreshold": 0.18,
-                "toolOutputKeepChars": 4000
+                "toolOutputKeepChars": 4000,
+                "mergeRuns": true
             }
         },
         "tool": {

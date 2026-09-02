@@ -46,6 +46,7 @@ export const VALID_CONFIG_KEYS = new Set([
     "dtc.targetRatio",
     "dtc.driftThreshold",
     "dtc.toolOutputKeepChars",
+    "dtc.mergeRuns",
     "tool",
     "tool.enabled",
 ])
@@ -179,6 +180,13 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
         } else {
             if (dtc.enabled !== undefined && typeof dtc.enabled !== "boolean") {
                 errors.push({ key: "dtc.enabled", expected: "boolean", actual: typeof dtc.enabled })
+            }
+            if (dtc.mergeRuns !== undefined && typeof dtc.mergeRuns !== "boolean") {
+                errors.push({
+                    key: "dtc.mergeRuns",
+                    expected: "boolean",
+                    actual: typeof dtc.mergeRuns,
+                })
             }
             const numericKeys: Array<[string, number, number]> = [
                 ["tailTurns", 0, Number.POSITIVE_INFINITY],
@@ -439,6 +447,7 @@ function mergeDtc(
                 ? override.driftThreshold
                 : driftFallback,
         toolOutputKeepChars: number("toolOutputKeepChars", 200, Number.POSITIVE_INFINITY),
+        mergeRuns: typeof override.mergeRuns === "boolean" ? override.mergeRuns : base.mergeRuns,
     }
 }
 
