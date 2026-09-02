@@ -47,6 +47,12 @@ const C_ZONE_MAX_TURNS = 8
 const M_ZONE_MAX_TURNS = 12
 /** M-zone text parts keep their first line, capped at this many characters. */
 const M_TEXT_KEEP_CHARS = 200
+/** Error text caps: middle zone keeps a short first line, distant zone less. */
+const M_ERROR_KEEP_CHARS = 200
+const D_ERROR_KEEP_CHARS = 100
+/** Tool inputs reduce to their target identity; commands keep a short head. */
+const INPUT_TARGET_KEYS = ["filePath", "path", "file", "filename", "pattern", "directory"]
+const COMMAND_KEEP_CHARS = 80
 /** Reasoning payloads degrade to a single space (never an empty string —
  * providers differ on empty content blocks). */
 const FOLDED_TEXT = " "
@@ -62,6 +68,8 @@ export interface TransformStats {
     contextTokens: number
     foldedTools: number
     foldedTexts: number
+    reducedInputs: number
+    foldedErrors: number
     digestedTurns: number
     skipped: "short" | "unknown-context" | "compaction" | undefined
 }
@@ -75,6 +83,8 @@ const NO_STATS: TransformStats = {
     contextTokens: 0,
     foldedTools: 0,
     foldedTexts: 0,
+    reducedInputs: 0,
+    foldedErrors: 0,
     digestedTurns: 0,
     skipped: undefined,
 }
@@ -165,6 +175,8 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
         estimatedAfter,
         contextTokens,
         foldedTools: stats.foldedTools,
+        reducedInputs: stats.reducedInputs,
+        foldedErrors: stats.foldedErrors,
         digestedTurns: stats.digestedTurns,
     })
     return stats
@@ -259,7 +271,11 @@ function foldDistant(
         const message = messages[i]
         for (const part of message?.parts ?? []) {
             if (!part || typeof part !== "object") continue
-            if (foldToolPart(part, now, true)) {
+            if (part.type === "tool" && part.state?.status === "error") {
+                foldErrorPart(part, D_ERROR_KEEP_CHARS, true, stats)
+                continue
+            }
+            if (foldToolPart(part, now, "distant", stats)) {
                 stats.foldedTools++
                 continue
             }
@@ -288,7 +304,11 @@ function foldMiddle(messages: MessageLike[], turn: Turn, stats: TransformStats, 
     for (let i = turn.start; i < turn.end; i++) {
         for (const part of messages[i]?.parts ?? []) {
             if (!part || typeof part !== "object") continue
-            if (foldToolPart(part, now, false)) {
+            if (part.type === "tool" && part.state?.status === "error") {
+                foldErrorPart(part, M_ERROR_KEEP_CHARS, false, stats)
+                continue
+            }
+            if (foldToolPart(part, now, "middle", stats)) {
                 stats.foldedTools++
                 continue
             }
@@ -336,12 +356,39 @@ function foldCurrent(
 }
 
 /**
- * Folds a completed tool part using the host's native degradation marker
- * (rendered as "[Old tool result content cleared]" by the host serializer).
- * In the distant zone the call arguments are cleared as well — the digest
- * carries the paths and commands that still matter. Returns true when folded.
+ * Reduces a tool call's arguments to their target identity: path-like keys
+ * stay, `command` keeps a short first line, and content payloads
+ * (oldString/newString/content/…) are dropped. Repeated or failed operations
+ * on the same target collapse to a recognizable skeleton — the final state
+ * lives on disk and in the current-task zone, never in stale payloads.
  */
-function foldToolPart(part: PartLike, now: number, clearInput: boolean): boolean {
+export function reduceInput(input: Record<string, unknown> | undefined): Record<string, unknown> {
+    if (!input || typeof input !== "object") return {}
+    const reduced: Record<string, unknown> = {}
+    for (const key of INPUT_TARGET_KEYS) {
+        const value = input[key]
+        if (typeof value === "string" && value) reduced[key] = value
+    }
+    const command = input.command
+    if (typeof command === "string" && command) {
+        reduced.command = firstLine(command, COMMAND_KEEP_CHARS)
+    }
+    return reduced
+}
+
+/**
+ * Folds a completed tool part using the host's native degradation marker
+ * (rendered as "[Old tool result content cleared]" by the host serializer)
+ * and reduces the call arguments per zone: the distant zone clears them
+ * entirely (the digest carries paths/commands), the middle zone keeps the
+ * target skeleton. Returns true when folded.
+ */
+function foldToolPart(
+    part: PartLike,
+    now: number,
+    zone: "distant" | "middle",
+    stats: TransformStats,
+): boolean {
     if (part.type !== "tool") return false
     const state = part.state
     if (!state || state.status !== "completed") return false
@@ -350,10 +397,36 @@ function foldToolPart(part: PartLike, now: number, clearInput: boolean): boolean
     } else {
         state.time = { compacted: now }
     }
-    if (clearInput && state.input && typeof state.input === "object") {
-        state.input = {}
+    if (state.input && typeof state.input === "object") {
+        state.input = zone === "distant" ? {} : reduceInput(state.input)
+        stats.reducedInputs++
     }
     return true
+}
+
+/**
+ * Folds a terminal error tool part: the failure text keeps a short first
+ * line (diagnostic value without the stack-trace weight) and the arguments
+ * reduce like a completed call's. The part itself stays — structure, IDs,
+ * and tool-call pairing are never touched. Current/tail zones never call
+ * this: in-flight task detail is the spec's red line.
+ */
+function foldErrorPart(
+    part: PartLike,
+    keepChars: number,
+    clearInput: boolean,
+    stats: TransformStats,
+): void {
+    const state = part.state
+    if (!state) return
+    if (typeof state.error === "string" && state.error.length > keepChars) {
+        state.error = firstLine(state.error, keepChars) || FOLDED_TEXT
+        stats.foldedErrors++
+    }
+    if (state.input && typeof state.input === "object") {
+        state.input = clearInput ? {} : reduceInput(state.input)
+        stats.reducedInputs++
+    }
 }
 
 function findSessionID(messages: MessageLike[]): string | undefined {

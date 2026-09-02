@@ -215,14 +215,131 @@ test("the compaction one-shot skip leaves the summarizer input untouched", () =>
     assert.ok(next.level >= 1)
 })
 
-test("error-state tool parts are never folded", () => {
+test("error-state tool parts are never folded in the protected tail", () => {
     const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
-    const failed = toolPart({ status: "error", output: "boom" })
-    messages[1]!.parts!.push(failed)
+    const failed = toolPart({
+        status: "error",
+        error: ` boom line1\n${"stack ".repeat(200)}`,
+        input: { filePath: "/src/tail.ts", oldString: "a".repeat(500) },
+    })
+    messages[messages.length - 1]!.parts!.push(failed)
     const h = harness({ contextTokens: 100 })
     h.run(messages)
-    assert.equal(failed.state?.time?.compacted, undefined)
-    assert.equal(failed.state?.output, "boom")
+    const state = failed.state!
+    assert.equal(state.time?.compacted, undefined)
+    assert.match(String(state.error), /^ boom line1\nstack/, "tail error text untouched")
+    assert.equal((state.input as any).oldString.length, 500)
+})
+
+test("repeated same-file edits with failures collapse to skeletons in the middle zone", () => {
+    // 30 turns → head 26; zones: D=[0,6), M=[6,18), C=[18,26)
+    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
+    const mAssistant = messages[13] // head turn ordinal 6 → first M turn's assistant
+    mAssistant!.parts = [
+        toolPart({
+            tool: "edit",
+            status: "error",
+            error: `oldString not found\n${"detail ".repeat(300)}`,
+            input: {
+                filePath: "/src/dup.ts",
+                oldString: "o".repeat(2000),
+                newString: "n".repeat(2000),
+            },
+        }),
+        toolPart({
+            tool: "edit",
+            status: "error",
+            error: `found multiple matches\n${"detail ".repeat(300)}`,
+            input: {
+                filePath: "/src/dup.ts",
+                oldString: "p".repeat(2000),
+                newString: "q".repeat(2000),
+            },
+        }),
+        toolPart({
+            tool: "edit",
+            output: "edit applied",
+            input: {
+                filePath: "/src/dup.ts",
+                oldString: "r".repeat(2000),
+                newString: "s".repeat(2000),
+            },
+        }),
+    ]
+    const structureBefore = snapshotStructure(messages)
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    assert.equal(snapshotStructure(messages), structureBefore, "structure untouched")
+
+    const [err1, err2, ok] = mAssistant!.parts!
+    // failed attempts: short single-line error, payload-free skeleton input
+    for (const part of [err1, err2]) {
+        const state = part.state!
+        assert.ok(String(state.error).length <= 201, "error folds to a short line")
+        assert.ok(!String(state.error).includes("\n"), "error keeps only the first line")
+        assert.deepEqual(state.input, { filePath: "/src/dup.ts" })
+    }
+    // successful attempt: host-native output marker + skeleton input
+    assert.ok(ok!.state!.time?.compacted, "completed edit gets the host fold marker")
+    assert.deepEqual(ok!.state!.input, { filePath: "/src/dup.ts" })
+    assert.ok(stats.reducedInputs >= 3)
+    assert.ok(stats.foldedErrors >= 2)
+    // net semantic: three calls on one file, zero stale payloads anywhere
+    const serialized = JSON.stringify(mAssistant!.parts)
+    assert.ok(!serialized.includes("oooo"))
+    assert.ok(!serialized.includes("detail detail"))
+})
+
+test("middle-zone bash commands keep a short first line only", () => {
+    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
+    const mAssistant = messages[13]
+    mAssistant!.parts = [
+        toolPart({
+            tool: "bash",
+            output: "done",
+            input: { command: `git status\n${"echo noise\n".repeat(100)}` },
+        }),
+    ]
+    const h = harness({ contextTokens: 100 })
+    h.run(messages)
+    const input = mAssistant!.parts![0].state!.input as Record<string, unknown>
+    assert.equal(input.command, "git status")
+})
+
+test("current-zone and distant-zone error handling respects the red lines", () => {
+    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
+    // C zone turn (head ordinal 18 → messages[36]/[37]) keeps error payloads
+    const cAssistant = messages[37]
+    cAssistant!.parts = [
+        toolPart({
+            tool: "edit",
+            status: "error",
+            error: `c-zone failure\n${"x".repeat(1000)}`,
+            input: { filePath: "/src/c.ts", oldString: "keepme".repeat(100) },
+        }),
+    ]
+    // D zone turn (messages[1]) clears inputs and shortens errors hard
+    const dAssistant = messages[1]
+    dAssistant!.parts = [
+        toolPart({
+            tool: "edit",
+            status: "error",
+            error: `d-zone failure\n${"y".repeat(1000)}`,
+            input: { filePath: "/src/d.ts", oldString: "gone".repeat(100) },
+        }),
+    ]
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 3)
+
+    const cState = cAssistant!.parts![0].state!
+    assert.match(String(cState.error), /^c-zone failure\n/, "C-zone error untouched")
+    assert.equal((cState.input as any).oldString.length, 600)
+
+    const dState = dAssistant!.parts![0].state!
+    assert.ok(String(dState.error).length <= 101)
+    assert.deepEqual(dState.input, {})
 })
 
 test("folding a thousand-message session stays fast", () => {
