@@ -173,3 +173,22 @@ test("config defaults expose the dtc block with tiered defaults", async () => {
     assert.equal(DEFAULT_DTC.driftThreshold, 0.18)
     assert.equal(DEFAULT_DTC.toolOutputKeepChars, 4000)
 })
+
+test("the chat.params feed learns the window and records fork correlation", async () => {
+    const { createChatParamsHandler } = await import("../lib/hooks")
+    const { DtcState } = await import("../lib/dtc/state")
+    const { fakeLogger } = await import("./fixtures")
+    const state = new DtcState()
+    const { logger } = fakeLogger()
+    const handler = createChatParamsHandler({ state, logger })
+    await handler({
+        sessionID: "ses_p",
+        model: { limit: { context: 123456 } },
+        message: { time: { created: 777 } },
+    })
+    assert.equal(state.contextTokens("ses_p"), 123456)
+    assert.equal(state.sessionByUserTime(777), "ses_p")
+    // Missing message or limit degrades gracefully: no throw, partial learning.
+    await handler({ sessionID: "ses_q" })
+    assert.equal(state.contextTokens("ses_q"), undefined)
+})

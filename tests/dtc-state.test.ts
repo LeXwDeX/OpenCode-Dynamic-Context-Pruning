@@ -77,3 +77,28 @@ test("dropSession clears limits, marks, and skip flags but not digests", () => {
     assert.equal(state.consumeCompactionSkip("ses_a"), false)
     assert.equal(state.cachedDigest("k"), "d")
 })
+
+test("params correlation index: lookup, latest-wins, drop cleanup, LRU bound", () => {
+    const state = new DtcState()
+    state.recordParamsSession("ses_a", 1000)
+    state.recordParamsSession("ses_b", 2000)
+    assert.equal(state.sessionByUserTime(1000), "ses_a")
+    assert.equal(state.sessionByUserTime(2000), "ses_b")
+    assert.equal(state.sessionByUserTime(3000), undefined)
+    // Duplicate timestamps: the latest record wins.
+    state.recordParamsSession("ses_c", 1000)
+    assert.equal(state.sessionByUserTime(1000), "ses_c")
+    // Dropping a session removes its correlation entries.
+    state.dropSession("ses_c")
+    assert.equal(state.sessionByUserTime(1000), undefined)
+    assert.equal(state.sessionByUserTime(2000), "ses_b")
+    // LRU bound: 250 new entries evict the oldest beyond 200.
+    for (let i = 0; i < 250; i++) state.recordParamsSession("ses_x", 10_000 + i)
+    assert.equal(state.sessionByUserTime(2000), undefined)
+    assert.equal(state.sessionByUserTime(10_249), "ses_x")
+    assert.ok(state.stats().params <= 200)
+    // Garbage input is ignored.
+    state.recordParamsSession("", 5000)
+    state.recordParamsSession("ses_d", Number.NaN)
+    assert.equal(state.sessionByUserTime(5000), undefined)
+})

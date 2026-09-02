@@ -137,3 +137,17 @@ export function fakeLogger() {
     }
     return { logger: logger as any, entries }
 }
+
+/** Fork hosts strip id/sessionID out of message payloads (both live in
+ * database columns there); simulate that shape to exercise the engine's
+ * chat.params correlation fallback. */
+export function toForkShape(messages: MessageLike[]): MessageLike[] {
+    for (const message of messages) {
+        const info = message.info as Record<string, unknown> | undefined
+        if (info) {
+            delete info.sessionID
+            delete info.id
+        }
+    }
+    return messages
+}
