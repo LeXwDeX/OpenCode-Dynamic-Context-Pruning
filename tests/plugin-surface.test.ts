@@ -20,7 +20,6 @@ function buildCtx() {
             session: {
                 get: async () => ({ data: {} }),
                 messages: async () => ({ data: [] }),
-                summarize: async () => ({ data: true }),
             },
             tui: { showToast: async () => {} },
         },
@@ -32,23 +31,33 @@ async function loadPlugin() {
     return server(buildCtx())
 }
 
-test("plugin registers the native session compacting hook", async () => {
+async function withConfig(config: Record<string, unknown>, run: () => Promise<void>) {
+    writeFileSync(join(configHome, "opencode", "dcp.jsonc"), JSON.stringify(config), "utf-8")
+    try {
+        await run()
+    } finally {
+        writeFileSync(
+            join(configHome, "opencode", "dcp.jsonc"),
+            JSON.stringify({ enabled: true, autoUpdate: false }),
+            "utf-8",
+        )
+    }
+}
+
+test("plugin registers the DTC transform and its chat.params feed by default", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(typeof hooks["experimental.chat.messages.transform"], "function")
+    assert.equal(typeof hooks["chat.params"], "function")
+})
+
+test("plugin registers the native session compacting hook (checkpoint quality layer)", async () => {
     const hooks = await loadPlugin()
     assert.equal(typeof hooks["experimental.session.compacting"], "function")
 })
 
-test("plugin registers the heuristic chat.message observer by default", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(typeof hooks["chat.message"], "function")
-})
-
-test("plugin registers the event handler for the boundary classifier (status/idle in, at-rest out)", async () => {
+test("plugin registers the lifecycle event handler and the dcp_prune tool by default", async () => {
     const hooks = await loadPlugin()
     assert.equal(typeof hooks.event, "function")
-})
-
-test("plugin registers the model-invokable dcp_prune tool by default", async () => {
-    const hooks = await loadPlugin()
     const definition = hooks.tool?.dcp_prune as
         | { description: string; args: Record<string, unknown> }
         | undefined
@@ -57,64 +66,29 @@ test("plugin registers the model-invokable dcp_prune tool by default", async () 
     assert.equal(Object.keys(definition.args).length, 0)
 })
 
-test("plugin no longer registers a system prompt transform hook", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(hooks["experimental.chat.system.transform"], undefined)
-})
-
-test("plugin no longer registers a text.complete hook", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(hooks["experimental.text.complete"], undefined)
+test("disabling dtc removes the transform and params feed but keeps the rest", async () => {
+    await withConfig({ enabled: true, autoUpdate: false, dtc: { enabled: false } }, async () => {
+        const hooks = await loadPlugin()
+        assert.equal(hooks["experimental.chat.messages.transform"], undefined)
+        assert.equal(hooks["chat.params"], undefined)
+        assert.equal(typeof hooks["experimental.session.compacting"], "function")
+        assert.ok(hooks.tool?.dcp_prune)
+    })
 })
 
 test("autoPrune and tool can be disabled independently via config", async () => {
-    writeFileSync(
-        join(configHome, "opencode", "dcp.jsonc"),
-        JSON.stringify({
-            enabled: true,
-            autoUpdate: false,
-            autoPrune: { enabled: false },
-            tool: { enabled: false },
-        }),
-        "utf-8",
-    )
-    try {
+    await withConfig({ enabled: true, autoUpdate: false, tool: { enabled: false } }, async () => {
         const hooks = await loadPlugin()
-        assert.equal(hooks["chat.message"], undefined)
-        assert.equal(hooks.event, undefined)
         assert.equal(hooks.tool, undefined)
+        assert.equal(typeof hooks["experimental.chat.messages.transform"], "function")
         assert.equal(typeof hooks["experimental.session.compacting"], "function")
-    } finally {
-        writeFileSync(
-            join(configHome, "opencode", "dcp.jsonc"),
-            JSON.stringify({ enabled: true, autoUpdate: false }),
-            "utf-8",
-        )
-    }
+    })
 })
 
-test("the event hook stays registered with only the tool enabled (deferred prunes)", async () => {
-    writeFileSync(
-        join(configHome, "opencode", "dcp.jsonc"),
-        JSON.stringify({
-            enabled: true,
-            autoUpdate: false,
-            autoPrune: { enabled: false },
-        }),
-        "utf-8",
-    )
-    try {
-        const hooks = await loadPlugin()
-        assert.equal(hooks["chat.message"], undefined)
-        assert.equal(typeof hooks.event, "function")
-        assert.ok(hooks.tool?.dcp_prune, "dcp_prune tool should stay registered")
-    } finally {
-        writeFileSync(
-            join(configHome, "opencode", "dcp.jsonc"),
-            JSON.stringify({ enabled: true, autoUpdate: false }),
-            "utf-8",
-        )
-    }
+test("plugin registers no system prompt or text.complete hooks", async () => {
+    const hooks = await loadPlugin()
+    assert.equal(hooks["experimental.chat.system.transform"], undefined)
+    assert.equal(hooks["experimental.text.complete"], undefined)
 })
 
 test("config hook never registers compress permissions or primary tools", async () => {
@@ -122,7 +96,7 @@ test("config hook never registers compress permissions or primary tools", async 
     assert.equal(typeof hooks.config, "function")
 
     const opencodeConfig: any = {}
-    await hooks.config(opencodeConfig)
+    await hooks.config!(opencodeConfig)
 
     assert.equal(opencodeConfig.permission?.compress, undefined)
     const primaryTools = opencodeConfig.experimental?.primary_tools ?? []
@@ -133,86 +107,69 @@ test("config hook still registers the /dcp command when commands are enabled", a
     const hooks = await loadPlugin()
 
     const opencodeConfig: any = {}
-    await hooks.config(opencodeConfig)
+    await hooks.config!(opencodeConfig)
 
     assert.ok(opencodeConfig.command?.dcp, "dcp command should stay registered")
 })
 
-test("language accepts only zh or en", async () => {
-    const { getInvalidConfigKeys, validateConfigTypes } = await import("../lib/config")
-    assert.deepEqual(validateConfigTypes({ language: "en" }), [])
-    assert.equal(validateConfigTypes({ language: "fr" }).length, 1)
-    assert.deepEqual(getInvalidConfigKeys({ language: "zh" }), [])
-})
-
-test("autoPrune.signals keys are validated and default to topic-drift only", async () => {
-    const { DEFAULT_AUTO_PRUNE, VALID_CONFIG_KEYS, validateConfigTypes } =
-        await import("../lib/config")
-    assert.deepEqual(DEFAULT_AUTO_PRUNE.signals, {
-        topicDrift: true,
-        volume: false,
-        idleGap: false,
-    })
-    for (const key of [
-        "autoPrune.signals",
-        "autoPrune.signals.topicDrift",
-        "autoPrune.signals.volume",
-        "autoPrune.signals.idleGap",
-    ]) {
-        assert.equal(VALID_CONFIG_KEYS.has(key), true, `${key} must be a valid config key`)
-    }
-    assert.deepEqual(validateConfigTypes({ autoPrune: { signals: { volume: true } } }), [])
-    const errors = validateConfigTypes({ autoPrune: { signals: { volume: "yes" } } })
-    assert.deepEqual(
-        errors.map((error) => error.key),
-        ["autoPrune.signals.volume"],
-    )
-})
-
-test("the signals migration hint fires while signals are unset and auto prune is on", async () => {
-    const { needsSignalsMigrationHint } = await import("../lib/config")
-    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: true } }), true)
-    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: true, signals: {} } }), false)
-    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: false } }), false)
-    assert.equal(needsSignalsMigrationHint({}), false)
-})
-
-test("language config switches the bundled compaction prompt to English", async () => {
-    writeFileSync(
-        join(configHome, "opencode", "dcp.jsonc"),
-        JSON.stringify({ enabled: true, autoUpdate: false, language: "en" }),
-        "utf-8",
-    )
-    try {
-        const hooks = await loadPlugin()
-        const handler = hooks["experimental.session.compacting"] as (
-            input: { sessionID: string },
-            output: { context: string[]; prompt?: string },
-        ) => Promise<void>
-        const output = { context: [] as string[], prompt: undefined as string | undefined }
-        await handler({ sessionID: "ses_lang_en" }, output)
-        assert.match(output.prompt ?? "", /## History Overview/)
-        assert.doesNotMatch(output.prompt ?? "", /## 历史概要/)
-    } finally {
-        writeFileSync(
-            join(configHome, "opencode", "dcp.jsonc"),
-            JSON.stringify({ enabled: true, autoUpdate: false }),
-            "utf-8",
-        )
-    }
-})
-
-test("removed legacy /dcp subcommands fall through to help", async () => {
+test("config hook raises the host compaction tail protection to DCP defaults", async () => {
     const hooks = await loadPlugin()
-    const handler = hooks["command.execute.before"]
-    assert.equal(typeof handler, "function")
 
-    for (const sub of ["compress", "decompress 1", "recompress 1", "manual on"]) {
-        const output = { parts: [] as any[] }
-        await assert.rejects(
-            handler({ command: "dcp", sessionID: "ses_surface", arguments: sub }, output),
-            /__DCP_HELP_HANDLED__/,
-            `legacy subcommand "${sub}" must not be handled`,
-        )
+    const opencodeConfig: any = {}
+    await hooks.config!(opencodeConfig)
+
+    assert.equal(opencodeConfig.compaction?.tail_turns, 4)
+    assert.equal(opencodeConfig.compaction?.preserve_recent_tokens, 32000)
+})
+
+test("config hook never overrides explicit host compaction settings", async () => {
+    const hooks = await loadPlugin()
+
+    const opencodeConfig: any = {
+        compaction: { tail_turns: 2, preserve_recent_tokens: 5000 },
     }
+    await hooks.config!(opencodeConfig)
+
+    assert.equal(opencodeConfig.compaction.tail_turns, 2)
+    assert.equal(opencodeConfig.compaction.preserve_recent_tokens, 5000)
+})
+
+test("config hook stays registered (and skips the command) when commands are disabled", async () => {
+    await withConfig(
+        { enabled: true, autoUpdate: false, commands: { enabled: false } },
+        async () => {
+            const hooks = await loadPlugin()
+            assert.equal(typeof hooks.config, "function")
+            assert.equal(hooks["command.execute.before"], undefined)
+
+            const opencodeConfig: any = {}
+            await hooks.config!(opencodeConfig)
+
+            assert.equal(opencodeConfig.command, undefined)
+            assert.equal(opencodeConfig.compaction?.tail_turns, 4)
+        },
+    )
+})
+
+test("the plugin never exposes a summarize-based compression surface", async () => {
+    // v4 invariant: DCP does not call session.summarize anywhere. The client
+    // stub has no summarize method at all — if any code path reached for it,
+    // plugin load or a hook call would throw.
+    const hooks = await loadPlugin()
+    const output = { messages: [] as unknown[] }
+    await (hooks["experimental.chat.messages.transform"] as any)({}, output)
+    await (hooks["chat.params"] as any)({ sessionID: "ses_x", model: { limit: { context: 8000 } } })
+    await (hooks.event as any)({
+        event: { type: "session.deleted", properties: { info: { id: "ses_x" } } },
+    })
+})
+
+test("config defaults expose the dtc block with tiered defaults", async () => {
+    const { DEFAULT_DTC } = await import("../lib/config")
+    assert.equal(DEFAULT_DTC.enabled, true)
+    assert.equal(DEFAULT_DTC.tailTurns, 4)
+    assert.equal(DEFAULT_DTC.lowWatermarkRatio, 0.5)
+    assert.equal(DEFAULT_DTC.targetRatio, 0.7)
+    assert.equal(DEFAULT_DTC.driftThreshold, 0.18)
+    assert.equal(DEFAULT_DTC.toolOutputKeepChars, 4000)
 })

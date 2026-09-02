@@ -4,37 +4,41 @@
 
 [**English**](./README.en.md) | **中文**
 
-DCP 为 OpenCode 原生 compaction 提供语义剪枝策略与主动触发机制。它不维护消息标记、消息 ID、压缩块、锚点或占位符。
+DCP 以**动态分级请求期压缩（DTC）**管理 OpenCode 会话上下文：折叠发生在每次模型请求的消息序列化之前，**永不触碰会话状态机**——不调用 `session.summarize`、不产生压缩回合、不写会话存储。压缩对连续自动工作完全透明：agent 可以不间断运行数日，上下文压力由引擎在请求期自动消化。
 
 ## 工作原理
 
-OpenCode 原生 compaction 负责生成和保存一个滚动检查点，并在后续模型请求中只发送：
+宿主在每次模型请求前触发 `experimental.chat.messages.transform`，DCP 在钩子内对**请求期消息副本**做分级折叠（宿主每轮循环从数据库重建该数组，因此所有修改天然只作用于本次请求）：
 
 ```text
-最新剪枝检查点 + 尚未压缩的近期尾部
+┌────────────┬────────────┬────────────┬──────────────┐
+│ D 远距离区 │ M 中距离区 │ C 当前任务 │ T 尾部保护区 │
+│ 重度折叠   │ 中度折叠   │ 轻度折叠   │ 最后 4 轮    │
+│ 结构化摘要 │ 首行+标记  │ 截长输出   │ 一个字节不动 │
+└────────────┴────────────┴────────────┴──────────────┘
+        ◄── 预算不足时从最远端逐级加深 ──►
 ```
 
-DCP 在 `experimental.session.compacting` 阶段提供专用提示词，把检查点组织为固定三段结构：
+- **T 尾部保护区**：最后 `dtc.tailTurns`（默认 4）轮对话**完全不折叠**。
+- **C 当前任务区**：自最近话题边界（词面漂移检测）以来的轮次，只把超长 tool 输出做首尾截断，任务细节不丢。
+- **M 中距离区**：长文本保留首行；tool 输出打宿主原生折叠标记（渲染为宿主自己的 `[Old tool result content cleared]`）；推理内容清空。
+- **D 远距离区**：整轮塌缩为一行机械摘要（意图 / 动作 / 涉及文件 / 结果 / 错误数），tool 参数一并清空——硬事实保留在摘要里。
 
-- `## 系统上下文` — AGENTS.md、项目规则等系统级内容，从上一份检查点原样保留合并；
-- `## 历史概要` — 早期历史和中部历史高度压缩：每项主题只留一句结论，不含过程；
-- 最近任务 — 轻度压缩：已完成任务一句话概括；进行中任务保留完整详情（目标、已完成步骤、文件路径、关键决策、阻塞、下一步）。与当前任务相关的近期细节优先保留，保证凭检查点即可直接继续工作。
+**动态预算**：估算低于上下文窗口的 `lowWatermarkRatio`（默认 50%）时**完全不折叠**，短会话零开销；超出则按 D→M→C 从远到近逐级加深，直到估算落回 `targetRatio`（默认 70%）以内。窗口大小由 `chat.params` 钩子按会话自动学习，未知时 fail-open 不折叠。
 
-## 触发压缩
+**三条结构铁律**（老版本"丢失标记号"问题的构造性排除）：
 
-- **OpenCode 自动 compaction**：达到宿主阈值时自动运行。
-- **模型调用 `dcp_prune` 工具**：插件注册的 LLM 工具，描述内置启发式规则——仅在话题明显变更或用户明确要求时调用；压缩排队到下一个确认的静息边界执行。
-- **插件启发式自动触发**（`autoPrune`）：监听用户消息流，在**确认的静息边界**（idle 观察后 2 秒静默窗口 + 宿主实时状态探针双重确认，宿主自动化接力会在窗口内取消边界）触发原生压缩。默认只启用话题变更信号：
-    - 话题变更（默认启用）：新消息与近期消息的词面相似度骤降（CJK 二元组 + Jaccard）；
-    - 消息量达到阈值（默认关闭，`autoPrune.signals.volume` 开启）；
-    - 长时间中断后恢复（默认关闭，`autoPrune.signals.idleGap` 开启）。
-      自动触发带冷却期；OpenCode 原生 `/compact` 或宿主压缩也会重置计数。
-- **OpenCode 原生 `/compact`**：手动触发同一条 compaction 路径。
-- **`/dcp summarize`**：手动调用原生 `session.summarize()`。
+1. 永不增删、重排消息或 part；永不改 ID——tool-call 与 tool-result 的配对不可能断裂；
+2. 只重写字符串载荷（text/output/reasoning），折叠 tool 输出用宿主原生 `time.compacted` 标记，不自造占位符协议；
+3. 一切修改仅存在于请求期副本，数据库中的会话历史逐字节不变。
 
-所有入口都经过同一协调器：同一会话的并发请求合并为一次原生调用；失败不会提交半成品检查点，原始上下文保持可用，默认 30 秒内不重试失败的请求。
+## 触发面
 
-压缩后的旧前缀不会再发送给模型，但 OpenCode 数据库中的原始会话历史不会被物理删除。下一次压缩会把旧检查点和新增尾部合并为一个新检查点，不会形成嵌套摘要。
+- **自动**：无触发概念——每次请求按预算自动决定折叠深度，无需任何信号或边界。
+- **模型调用 `dcp_prune` 工具**：瞬时返回。标记话题边界（当前任务区从下一轮重算）并把本会话折叠下限提到 M 级——旧任务内容从下一次请求起被折叠。绝不打断当前工作。
+- **`/dcp fold`**：手动版本，直接把折叠下限提到最深档。
+- **`/dcp status`**：查看当前会话的轮数、token 估算、窗口与降级档位。
+- **宿主自身的 compaction**（`/compact`、上下文溢出兜底）：不受 DTC 影响照常工作；DCP 仍为其提供高质量语义检查点提示词（滚动合并上一份检查点、三层压缩深度、四段固定结构），并把宿主尾部保护默认提升到 4 轮 / 32000 tokens（`compaction.tail_turns` / `preserve_recent_tokens`，用户显式配置优先）。压缩输入经过 transform 钩子时 DTC 自动跳过，保证摘要器看到全保真内容。
 
 ## 安装
 
@@ -63,41 +67,30 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
     "experimental": {
         "customPrompts": false,
     },
-    "summarize": {
-        "failureCooldownMs": 30000,
+    "dtc": {
+        "enabled": true,
+        "tailTurns": 4,
+        "lowWatermarkRatio": 0.5,
+        "targetRatio": 0.7,
+        "driftThreshold": 0.18,
+        "toolOutputKeepChars": 4000,
     },
     "tool": {
         "enabled": true,
     },
-    "autoPrune": {
-        "enabled": true,
-        "signals": {
-            "topicDrift": true,
-            "volume": false,
-            "idleGap": false,
-        },
-        "minMessages": 8,
-        "volumeThreshold": 30,
-        "driftThreshold": 0.18,
-        "idleGapMs": 1800000,
-        "cooldownMs": 300000,
-    },
 }
 ```
 
-| 键                             | 说明                                                                        |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `language`                     | 内置压缩提示词语言：`zh`（默认）/ `en`；自定义覆盖文件优先于该配置          |
-| `tool.enabled`                 | 注册模型可调用的 `dcp_prune` 工具（描述仅授权话题变更或用户明确要求时调用） |
-| `autoPrune.enabled`            | 启用插件侧启发式自动压缩                                                    |
-| `autoPrune.signals.topicDrift` | 话题变更信号开关（默认 `true`，唯一默认启用的信号）                         |
-| `autoPrune.signals.volume`     | 消息量信号开关（默认 `false`；旧版本默认开启，升级后需显式重新开启）        |
-| `autoPrune.signals.idleGap`    | 长时间中断信号开关（默认 `false`；旧版本默认开启，升级后需显式重新开启）    |
-| `autoPrune.minMessages`        | 会话用户消息数达到该值前不做任何自动判定                                    |
-| `autoPrune.volumeThreshold`    | 距上次压缩的用户消息量阈值                                                  |
-| `autoPrune.driftThreshold`     | Jaccard 相似度低于该值视为话题变更（0–1）                                   |
-| `autoPrune.idleGapMs`          | 用户消息间隔超过该值视为长时间中断后恢复                                    |
-| `autoPrune.cooldownMs`         | 同一会话两次自动压缩的最小间隔                                              |
+| 键                        | 说明                                                                     |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `language`                | 内置压缩提示词语言：`zh`（默认）/ `en`；自定义覆盖文件优先于该配置       |
+| `dtc.enabled`             | 动态分级请求期压缩总开关                                                 |
+| `dtc.tailTurns`           | 尾部保护轮数：最后 N 轮完全不折叠（默认 4）                              |
+| `dtc.lowWatermarkRatio`   | 估算低于窗口 × 该比例时完全不折叠（默认 0.5）                            |
+| `dtc.targetRatio`         | 逐级加深折叠直到估算 ≤ 窗口 × 该比例（默认 0.7）                         |
+| `dtc.driftThreshold`      | Jaccard 相似度低于该值视为话题变更，开启新的当前任务区（0–1，默认 0.18） |
+| `dtc.toolOutputKeepChars` | 当前任务区超长 tool 输出的首尾截断保留字符数（默认 4000）                |
+| `tool.enabled`            | 注册模型可调用的 `dcp_prune` 工具（瞬时标记话题边界，绝不打断工作）      |
 
 启用 `experimental.customPrompts` 后，可将生成的
 `~/.config/opencode/dcp-prompts/defaults/compaction.md` 复制到以下任一覆盖位置：
@@ -106,13 +99,11 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
 - 自定义配置目录：`$OPENCODE_CONFIG_DIR/dcp-prompts/overrides/compaction.md`
 - 全局：`~/.config/opencode/dcp-prompts/overrides/compaction.md`
 
-## 从 3.x 旧压缩管线迁移
+## 从 3.x 迁移
 
-旧配置 `compress`、`manualMode`、`strategies`、`turnProtection`、
-`pruneNotification`、`protectedFilePatterns` 及旧命令保护字段均已删除。DCP 会显示迁移警告并忽略这些字段，不会静默继续旧行为。
+3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
 
-以下功能已删除：`compress` / `compress_range` 模型工具、`/dcp compress`、
-`/dcp decompress`、`/dcp recompress`、`/dcp sweep`、消息标记和插件压缩状态持久化。磁盘上已有的旧 DCP 会话状态文件不会被读取、改写或删除，可在确认不再回退旧版本后自行清理。
+行为变化：压缩不再产生可见的"检查点回合"，也不再需要任何静息边界或续跑机制——上下文折叠在每次请求内自动完成，会话与状态机零感知。语义检查点仍由宿主自身的 compaction（手动 `/compact` 或溢出兜底）产生，DCP 继续为其提供提示词与尾部保护默认值。
 
 ## 开发验证
 

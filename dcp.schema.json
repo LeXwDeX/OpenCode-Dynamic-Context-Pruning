@@ -2,7 +2,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "$id": "https://raw.githubusercontent.com/LeXwDeX/opencode-dynamic-context-pruning/master/dcp.schema.json",
     "title": "DCP Plugin Configuration",
-    "description": "Semantic pruning policy for OpenCode native compaction",
+    "description": "Dynamic tiered context compression for OpenCode: request-time folding plus semantic checkpoint quality for the host's own compaction",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -38,7 +38,7 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register /dcp summarize"
+                    "description": "Register /dcp fold and /dcp status"
                 }
             },
             "default": { "enabled": true }
@@ -55,91 +55,56 @@
             },
             "default": { "customPrompts": false }
         },
-        "summarize": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "failureCooldownMs": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 30000,
-                    "description": "Delay before retrying native summarize after a failure"
-                }
-            },
-            "default": { "failureCooldownMs": 30000 }
-        },
-        "autoPrune": {
+        "dtc": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Heuristically trigger native compaction between turns on topic drift, message volume or long idle gaps"
+                    "description": "Dynamic tiered compression: fold the outgoing model request by recency tiers, never touching the session or its state machine"
                 },
-                "signals": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "topicDrift": {
-                            "type": "boolean",
-                            "default": true,
-                            "description": "Prune when consecutive user messages signal a real topic change (the only default-on signal)"
-                        },
-                        "volume": {
-                            "type": "boolean",
-                            "default": false,
-                            "description": "Prune when user messages since the last prune reach volumeThreshold (default off)"
-                        },
-                        "idleGap": {
-                            "type": "boolean",
-                            "default": false,
-                            "description": "Prune when the session resumes after idleGapMs of inactivity (default off)"
-                        }
-                    },
-                    "default": { "topicDrift": true, "volume": false, "idleGap": false },
-                    "description": "Per-signal switches; only topic changes are enabled by default"
-                },
-                "minMessages": {
+                "tailTurns": {
                     "type": "number",
-                    "minimum": 1,
-                    "default": 8,
-                    "description": "Minimum user messages in the session before any auto-prune signal is considered"
+                    "minimum": 0,
+                    "default": 4,
+                    "description": "Conversation turns at the end that are never folded (kept verbatim)"
                 },
-                "volumeThreshold": {
+                "lowWatermarkRatio": {
                     "type": "number",
-                    "minimum": 2,
-                    "default": 30,
-                    "description": "User messages since the last prune that trigger compaction by volume"
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.5,
+                    "description": "Fraction of the context window below which no folding happens at all"
+                },
+                "targetRatio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "default": 0.7,
+                    "description": "Folding escalates (distant → middle → current) until the estimate fits this fraction of the context window"
                 },
                 "driftThreshold": {
                     "type": "number",
                     "minimum": 0,
                     "maximum": 1,
                     "default": 0.18,
-                    "description": "Jaccard similarity below which consecutive user messages count as a topic change"
+                    "description": "Jaccard similarity below which consecutive user messages count as a topic change (starts the protected current-task zone)"
                 },
-                "idleGapMs": {
+                "toolOutputKeepChars": {
                     "type": "number",
-                    "minimum": 0,
-                    "default": 1800000,
-                    "description": "Gap between user messages that counts as resuming after a long break"
-                },
-                "cooldownMs": {
-                    "type": "number",
-                    "minimum": 0,
-                    "default": 300000,
-                    "description": "Minimum interval between two automatic prunes of the same session"
+                    "minimum": 200,
+                    "default": 4000,
+                    "description": "Current-zone tool outputs longer than this are head+tail truncated"
                 }
             },
             "default": {
                 "enabled": true,
-                "signals": { "topicDrift": true, "volume": false, "idleGap": false },
-                "minMessages": 8,
-                "volumeThreshold": 30,
+                "tailTurns": 4,
+                "lowWatermarkRatio": 0.5,
+                "targetRatio": 0.7,
                 "driftThreshold": 0.18,
-                "idleGapMs": 1800000,
-                "cooldownMs": 300000
+                "toolOutputKeepChars": 4000
             }
         },
         "tool": {
@@ -149,7 +114,7 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register the model-invokable dcp_prune tool with heuristic usage guidance"
+                    "description": "Register the model-invokable dcp_prune tool (marks a topic boundary and deepens folding; instant, never interrupts)"
                 }
             },
             "default": { "enabled": true }

@@ -4,39 +4,41 @@
 
 **English** | [中文](./README.md)
 
-DCP supplies a semantic-pruning policy and proactive triggers to OpenCode's native compaction lifecycle. It does not own message markers, message IDs, compression blocks, anchors, or placeholders.
+DCP manages OpenCode session context with **Dynamic Tiered Compression (DTC)**: folding happens inside every model request, before message serialization, and **never touches the session state machine** — no `session.summarize` calls, no compaction turns, no session writes. Compression is fully transparent to continuous autonomous work: an agent can run for days while the engine absorbs context pressure per request.
 
 ## How it works
 
-OpenCode owns one rolling checkpoint. After compaction, the model sees only:
+The host fires `experimental.chat.messages.transform` before every model request. DCP folds the **request-scoped message copy** inside that hook (the host rebuilds the array from the database on every loop iteration, so all mutations are inherently request-scoped):
 
 ```text
-latest pruned checkpoint + uncompacted recent tail
+┌──────────────┬──────────────┬──────────────┬────────────────┐
+│ D distant    │ M middle     │ C current    │ T protected    │
+│ heavy fold   │ medium fold  │ light fold   │ last 4 turns   │
+│ digest lines │ first lines  │ truncate big │ never touched  │
+└──────────────┴──────────────┴──────────────┴────────────────┘
+        ◄── escalation deepens from the far end under budget pressure ──►
 ```
 
-During `experimental.session.compacting`, DCP asks the summarizer to organize the checkpoint into a fixed three-tier structure:
+- **T tail zone**: the last `dtc.tailTurns` (default 4) conversation turns are **never folded**.
+- **C current-task zone**: turns since the latest topic boundary (lexical drift detection); only oversized tool outputs are head+tail truncated, task details survive.
+- **M middle zone**: long texts keep their first line; tool outputs get the host's native fold marker (rendered by the host as its own `[Old tool result content cleared]`); reasoning is emptied.
+- **D distant zone**: whole turns collapse into one mechanical digest line (intent / actions / files touched / outcome / error count) and tool inputs are cleared — hard facts live on in the digest.
 
-- `## 系统上下文` (System context) — system-level rules such as AGENTS.md, carried forward verbatim from the previous checkpoint;
-- `## 历史概要` (History digest) — early and middle history heavily compressed: one-line outcomes only, no process;
-- Recent tasks — lightly compressed: completed tasks summarized in one line each; in-progress tasks keep full detail (goal, finished steps, file paths, key decisions, blockers, next actions). Details related to the current task are preserved first so work can continue from the checkpoint alone.
+**Dynamic budget**: below `lowWatermarkRatio` of the context window (default 50%) **nothing is folded at all** — short sessions pay zero cost. Above it, folding escalates D→M→C from the far end until the estimate fits `targetRatio` (default 70%). The window size is learned per session from the `chat.params` hook; until it is known the engine fails open (no folding).
 
-Unrelated chat, other-project context, tool retries, and repeated edits are folded away as before.
+**Three structural laws** (the constructive exclusion of the old versions' "lost markers" failure):
 
-## Trigger compaction
+1. Messages and parts are never added, removed, or reordered; IDs never change — tool-call/tool-result pairing cannot break;
+2. Only string payloads are rewritten (text/output/reasoning), and tool-output folding uses the host's native `time.compacted` marker instead of a custom placeholder protocol;
+3. Every mutation lives in the request-scoped copy only — session history in the database stays byte-identical.
 
-- **OpenCode automatic compaction** uses the policy automatically.
-- **The `dcp_prune` model tool** — DCP registers an LLM-invokable tool whose description carries heuristic guidance: call it immediately when the topic clearly changes, when a task wraps up, or when the context has grown noticeably.
-- **Heuristic auto-prune** (`autoPrune`) — observes incoming user messages and triggers native compaction at turn boundaries (`session.idle`) on:
-    - topic drift: lexical similarity between the newest message and recent history drops sharply (CJK bigrams + Jaccard);
-    - message volume since the last prune crossing a threshold;
-    - resuming after a long idle gap.
-      Auto-triggers respect a cooldown; native `/compact` or host compaction also resets the counters.
-- OpenCode's native `/compact` command uses the same path.
-- `/dcp summarize` calls native `session.summarize()` manually.
+## Trigger surfaces
 
-All entries share one coordinator: concurrent requests for the same session share a single native call. A failed call is fail-open and keeps the original context; retries are cooled down for 30 seconds by default.
-
-Pruned prefixes stop being sent to the model, but the original session history is not physically deleted from OpenCode's database. A later compaction replaces the previous checkpoint with one merged checkpoint instead of nesting summaries or building a compression-block graph.
+- **Automatic**: there is nothing to trigger — every request decides its own fold depth from the budget. No signals, no boundaries, no queue.
+- **The `dcp_prune` model tool**: returns instantly. Marks a topic boundary (the current-task zone restarts at the next turn) and raises this session's minimum fold level to M — old-task content folds from the next request onward. Never interrupts the running turn.
+- **`/dcp fold`**: manual variant; raises the minimum fold level to the deepest tier.
+- **`/dcp status`**: shows turns, token estimate, context window, and the manual fold level for the session.
+- **The host's own compaction** (`/compact`, context-overflow fallback): unaffected by DTC and still fully functional. DCP continues to supply the high-quality semantic checkpoint prompt (rolling merge of the previous checkpoint, tiered compression depth, fixed four-section structure) and raises the host's tail protection defaults to 4 turns / 32000 tokens (`compaction.tail_turns` / `preserve_recent_tokens`; explicit user config always wins). When the compaction input passes through the transform hook, DTC skips it via a one-shot flag so the summarizer sees full-fidelity content.
 
 ## Install
 
@@ -46,7 +48,11 @@ opencode plugin @lexwdex-org/opencode-dcp@latest --global
 
 ## Configuration
 
-DCP loads global, custom-config-directory, then project configuration:
+DCP reads these layers in order; later layers override earlier ones:
+
+1. `~/.config/opencode/dcp.jsonc` or `dcp.json`
+2. `$OPENCODE_CONFIG_DIR/dcp.jsonc` or `dcp.json`
+3. Project `.opencode/dcp.jsonc` or `dcp.json`
 
 ```jsonc
 {
@@ -54,40 +60,59 @@ DCP loads global, custom-config-directory, then project configuration:
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
-    "language": "zh",
-    "commands": { "enabled": true },
-    "experimental": { "customPrompts": false },
-    "summarize": { "failureCooldownMs": 30000 },
-    "tool": { "enabled": true },
-    "autoPrune": {
+    "language": "en",
+    "commands": {
         "enabled": true,
-        "minMessages": 8,
-        "volumeThreshold": 30,
+    },
+    "experimental": {
+        "customPrompts": false,
+    },
+    "dtc": {
+        "enabled": true,
+        "tailTurns": 4,
+        "lowWatermarkRatio": 0.5,
+        "targetRatio": 0.7,
         "driftThreshold": 0.18,
-        "idleGapMs": 1800000,
-        "cooldownMs": 300000,
+        "toolOutputKeepChars": 4000,
+    },
+    "tool": {
+        "enabled": true,
     },
 }
 ```
 
-| Key                         | Meaning                                                                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `language`                  | Language of the bundled compaction prompt: `zh` (default) / `en`; custom overrides always win |
-| `tool.enabled`              | Register the model-invokable `dcp_prune` tool with heuristic usage guidance                   |
-| `autoPrune.enabled`         | Enable plugin-side heuristic auto-compaction                                                  |
-| `autoPrune.minMessages`     | Minimum user messages before any auto-prune signal is considered                              |
-| `autoPrune.volumeThreshold` | User messages since the last prune that trigger compaction by volume                          |
-| `autoPrune.driftThreshold`  | Jaccard similarity below which consecutive messages count as a topic change (0–1)             |
-| `autoPrune.idleGapMs`       | Gap between user messages that counts as resuming after a long break                          |
-| `autoPrune.cooldownMs`      | Minimum interval between two automatic prunes of the same session                             |
+| Key                       | Description                                                                                                |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `language`                | Bundled compaction prompt language: `zh` (default) / `en`; custom overrides always win                     |
+| `dtc.enabled`             | Master switch for dynamic tiered request-time compression                                                  |
+| `dtc.tailTurns`           | Turns at the end that are never folded (default 4)                                                         |
+| `dtc.lowWatermarkRatio`   | No folding below window × ratio (default 0.5)                                                              |
+| `dtc.targetRatio`         | Escalate folding until the estimate fits window × ratio (default 0.7)                                      |
+| `dtc.driftThreshold`      | Jaccard similarity below which consecutive user messages start a new current-task zone (0–1, default 0.18) |
+| `dtc.toolOutputKeepChars` | Head+tail characters kept for oversized current-zone tool outputs (default 4000)                           |
+| `tool.enabled`            | Register the model-invokable `dcp_prune` tool (instant boundary mark, never interrupts)                    |
 
-When `experimental.customPrompts` is enabled, copy the generated
-`~/.config/opencode/dcp-prompts/defaults/compaction.md` to a project, custom-config, or global `dcp-prompts/overrides/compaction.md` path.
+With `experimental.customPrompts` enabled, copy the generated
+`~/.config/opencode/dcp-prompts/defaults/compaction.md` to any override location:
 
-## Migrating from the legacy 3.x pipeline
+- Project: `.opencode/dcp-prompts/overrides/compaction.md`
+- Custom config dir: `$OPENCODE_CONFIG_DIR/dcp-prompts/overrides/compaction.md`
+- Global: `~/.config/opencode/dcp-prompts/overrides/compaction.md`
 
-Legacy `compress`, `manualMode`, `strategies`, `turnProtection`, notification, protected-file, and command-protection settings are removed. DCP reports them as deprecated and ignores them.
+## Migrating from 3.x
 
-The old model tools, range/message compression, `/dcp compress`, decompression/recompression/sweep commands, message markers, and plugin compression persistence are gone. Existing legacy DCP state files are neither read nor modified; remove them manually only after deciding that you will not roll back.
+The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
+
+Behavior change: compression no longer produces a visible "checkpoint turn" and needs no at-rest boundaries or continuation machinery — context folds automatically inside each request, invisible to the session and its state machine. Semantic checkpoints are still produced by the host's own compaction (manual `/compact` or the overflow fallback), for which DCP continues to provide the prompt and tail-protection defaults.
+
+## Development
+
+```bash
+npm test
+npm run typecheck
+npm run build
+npm run format:check
+npm run check:package
+```
 
 License: AGPL-3.0-or-later.

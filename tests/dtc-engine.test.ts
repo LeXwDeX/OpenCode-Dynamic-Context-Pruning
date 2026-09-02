@@ -1,0 +1,256 @@
+import assert from "node:assert/strict"
+import test from "node:test"
+import { DTC_DEFAULTS, segmentTurns, transformMessages } from "../lib/dtc/engine"
+import { DtcState } from "../lib/dtc/state"
+import type { MessageLike } from "../lib/dtc/types"
+import {
+    buildTurns,
+    deepCloneMessages,
+    fakeLogger,
+    snapshotStructure,
+    toolPart,
+    textPart,
+    reasoningPart,
+    userMessage,
+    assistantMessage,
+} from "./fixtures"
+
+function harness(options: { contextTokens?: number; config?: Partial<typeof DTC_DEFAULTS> } = {}) {
+    const state = new DtcState()
+    if (options.contextTokens !== undefined) {
+        state.observeContextLimit("ses_test", options.contextTokens)
+    }
+    const { logger } = fakeLogger()
+    return {
+        state,
+        config: { ...DTC_DEFAULTS, ...options.config },
+        logger,
+        run: (messages: MessageLike[]) =>
+            transformMessages(messages, {
+                state,
+                config: { ...DTC_DEFAULTS, ...options.config },
+                logger,
+                now: () => 1_700_000_000_000,
+            }),
+    }
+}
+
+test("segmentTurns splits at user messages and skips compaction machinery", () => {
+    const messages = buildTurns(3)
+    messages.splice(2, 0, {
+        info: { id: "msg_c", role: "user", sessionID: "ses_test" },
+        parts: [{ type: "compaction" }],
+    })
+    const turns = segmentTurns(messages)
+    assert.equal(turns.length, 3)
+    assert.equal(turns[0]!.start, 0)
+    assert.equal(turns[1]!.start, 3)
+    assert.equal(turns[2]!.end, messages.length)
+})
+
+test("sessions within the tail turn count are never folded", () => {
+    const messages = buildTurns(4)
+    const before = deepCloneMessages(messages)
+    const h = harness({ contextTokens: 10 })
+    const stats = h.run(messages)
+    assert.equal(stats.skipped, "short")
+    assert.equal(stats.level, 0)
+    assert.deepEqual(messages, before)
+})
+
+test("folding fails open until the context window is known", () => {
+    const messages = buildTurns(10, { toolOutputChars: 5000 })
+    const before = deepCloneMessages(messages)
+    const h = harness({ contextTokens: undefined })
+    const stats = h.run(messages)
+    assert.equal(stats.skipped, "unknown-context")
+    assert.deepEqual(messages, before)
+})
+
+test("under the low watermark nothing is folded even with many turns", () => {
+    const messages = buildTurns(30)
+    const before = deepCloneMessages(messages)
+    const h = harness({ contextTokens: 1_000_000 })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 0)
+    assert.equal(stats.skipped, undefined)
+    assert.deepEqual(messages, before)
+})
+
+test("structural invariant: folding never adds, removes, or reorders messages or parts", () => {
+    const messages = buildTurns(30, { toolOutputChars: 3000, textChars: 400 })
+    const structureBefore = snapshotStructure(messages)
+    const h = harness({ contextTokens: 2000 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 1, "must actually fold under pressure")
+    assert.equal(snapshotStructure(messages), structureBefore)
+})
+
+test("the protected tail is never touched at any fold level", () => {
+    const messages = buildTurns(30, { toolOutputChars: 3000, textChars: 400 })
+    const tailBefore = deepCloneMessages(messages.slice(-8))
+    const h = harness({ contextTokens: 100, config: { tailTurns: 4 } })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 3, "tiny window must escalate to the deepest level")
+    assert.deepEqual(messages.slice(-8), tailBefore)
+})
+
+test("distant turns collapse to a mechanical digest and host-native tool markers", () => {
+    const messages = buildTurns(30, { toolOutputChars: 3000, textChars: 400 })
+    const h = harness({ contextTokens: 100 })
+    h.run(messages)
+    const firstUserText = messages[0]!.parts![0]
+    assert.match(String(firstUserText.text), /^\[DCP·轮1\] \| 意图: /)
+    assert.match(String(firstUserText.text), /动作: bash/)
+    assert.match(String(firstUserText.text), /涉及: .*\/src\/m1\.ts/)
+    const tool = messages[1]!.parts!.find((p) => p.type === "tool")!
+    assert.equal(tool.state?.time?.compacted, 1_700_000_000_000)
+    assert.deepEqual(tool.state?.input, {})
+    const reasoning = messages[1]!.parts!.find((p) => p.type === "reasoning")!
+    assert.equal(reasoning.text, " ")
+})
+
+test("middle-zone tools keep their inputs while outputs get the host marker", () => {
+    // 30 turns, head 26; force level 2+ via a small window; zones:
+    // cStart = max(0, 26-8) = 18, mStart = max(0, 18-12) = 6 → M = turns 6..17
+    const messages = buildTurns(30, { toolOutputChars: 100, textChars: 60 })
+    const h = harness({ contextTokens: 100 })
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    const mTurnUser = messages[12] // head turn ordinal 6 → message index 12
+    const mTool = messages[13]!.parts!.find((p) => p.type === "tool")!
+    assert.ok(mTool.state?.time?.compacted, "M-zone tool folded with host marker")
+    assert.deepEqual(mTool.state?.input, { command: "echo step-7", filePath: "/src/m7.ts" })
+    assert.ok(mTurnUser, "M-zone user message still present")
+})
+
+test("current-zone folding only truncates oversized tool outputs head+tail", () => {
+    // Make the C zone the only foldable weight: short D/M content, huge C tools.
+    const messages = buildTurns(12, { toolOutputChars: 10, textChars: 20 })
+    // head = 8 turns; cStart = max(0, 8-8) = 0 → whole head is C zone
+    for (const message of messages.slice(0, 16)) {
+        for (const part of message.parts ?? []) {
+            if (part.type === "tool" && part.state) {
+                part.state.output = "z".repeat(20_000)
+            }
+        }
+    }
+    const h = harness({
+        contextTokens: 30_000,
+        config: { lowWatermarkRatio: 0.1, targetRatio: 0.2, toolOutputKeepChars: 2000 },
+    })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 3)
+    const cTool = messages[1]!.parts!.find((p) => p.type === "tool")!
+    const output = String(cTool.state?.output)
+    assert.ok(output.includes("[DCP 已折叠"))
+    assert.ok(output.length < 2500)
+    assert.equal(cTool.state?.time?.compacted, undefined, "C zone never uses the cleared marker")
+    // C-zone text is untouched
+    assert.match(String(messages[0]!.parts![0].text), /任务1/)
+})
+
+test("escalation stops as soon as the estimate fits the target", () => {
+    // One huge distant tool output; folding D alone must satisfy the budget.
+    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
+    const dTool = messages[1]!.parts!.find((p) => p.type === "tool")!
+    dTool.state!.output = "q".repeat(200_000)
+    const h = harness({
+        contextTokens: 100_000,
+        config: { lowWatermarkRatio: 0.1, targetRatio: 0.5 },
+    })
+    const stats = h.run(messages)
+    assert.equal(stats.level, 1)
+    assert.ok(stats.estimatedAfter <= 50_000)
+})
+
+test("a manual boundary mark deepens folding even below the low watermark", () => {
+    const messages = buildTurns(10, { toolOutputChars: 200, textChars: 100 })
+    const h = harness({ contextTokens: 1_000_000 })
+    h.state.markBoundary("ses_test", 5 * 1000, 2)
+    const stats = h.run(messages)
+    assert.ok(stats.level >= 2)
+    // head = 6 turns; mark at t=5000 covers turns created <= 5000 (turns 1..5)
+    // → markStart = 5, cStart = min(6, max(0,5,6-8→0)) = 5 → M = [mStart,5)
+    const mTool = messages[1]!.parts!.find((p) => p.type === "tool")!
+    assert.ok(mTool.state?.time?.compacted)
+})
+
+test("digests are deterministic and cached across requests", () => {
+    const h = harness({ contextTokens: 100 })
+    const first = buildTurns(30, { toolOutputChars: 500, textChars: 200 })
+    h.run(first)
+    const digestFirst = String(first[0]!.parts![0].text)
+    const cached = h.state.stats().digests
+    assert.ok(cached >= 1)
+
+    const second = buildTurns(30, { toolOutputChars: 500, textChars: 200 })
+    // Different message IDs but identical content shape → different keys, so
+    // determinism is asserted on the digest text, not cache hits.
+    h.run(second)
+    const digestSecond = String(second[0]!.parts![0].text)
+    assert.equal(
+        digestFirst
+            .replace(/轮\d+/, "轮N")
+            .replace(/m\d+/, "mX")
+            .replace(/任务\d+/, "任务N"),
+        digestSecond
+            .replace(/轮\d+/, "轮N")
+            .replace(/m\d+/, "mX")
+            .replace(/任务\d+/, "任务N"),
+    )
+})
+
+test("the compaction one-shot skip leaves the summarizer input untouched", () => {
+    const messages = buildTurns(30, { toolOutputChars: 3000 })
+    const before = deepCloneMessages(messages)
+    const h = harness({ contextTokens: 100 })
+    h.state.armCompactionSkip("ses_test")
+    const skipped = h.run(messages)
+    assert.equal(skipped.skipped, "compaction")
+    assert.deepEqual(messages, before)
+    // One-shot: the next transform folds normally.
+    const next = h.run(messages)
+    assert.notEqual(next.skipped, "compaction")
+    assert.ok(next.level >= 1)
+})
+
+test("error-state tool parts are never folded", () => {
+    const messages = buildTurns(30, { toolOutputChars: 10, textChars: 30 })
+    const failed = toolPart({ status: "error", output: "boom" })
+    messages[1]!.parts!.push(failed)
+    const h = harness({ contextTokens: 100 })
+    h.run(messages)
+    assert.equal(failed.state?.time?.compacted, undefined)
+    assert.equal(failed.state?.output, "boom")
+})
+
+test("folding a thousand-message session stays fast", () => {
+    const messages = buildTurns(500, { toolOutputChars: 800, textChars: 300 })
+    assert.ok(messages.length >= 1000)
+    const h = harness({ contextTokens: 50_000 })
+    const t0 = performance.now()
+    const stats = h.run(messages)
+    const elapsed = performance.now() - t0
+    assert.ok(stats.level >= 1)
+    assert.ok(elapsed < 250, `transform took ${elapsed.toFixed(1)}ms, expected < 250ms`)
+})
+
+test("transform tolerates malformed messages without throwing", () => {
+    const messages: MessageLike[] = [
+        {},
+        { info: { role: "user" } },
+        { info: { role: "user", sessionID: "ses_test" }, parts: [textPart("正常"), null as any] },
+        assistantMessage([reasoningPart("r"), textPart("ok")]),
+        ...buildTurns(6, { toolOutputChars: 500 }),
+    ]
+    const h = harness({ contextTokens: 100 })
+    assert.doesNotThrow(() => h.run(messages))
+})
+
+test("user messages without text still digest safely", () => {
+    const messages = buildTurns(30, { toolOutputChars: 500, textChars: 200 })
+    messages[0]!.parts = [{ type: "file" as any, id: "p_file" } as any]
+    const h = harness({ contextTokens: 100 })
+    assert.doesNotThrow(() => h.run(messages))
+})

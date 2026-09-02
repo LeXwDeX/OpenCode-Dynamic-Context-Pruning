@@ -3,6 +3,7 @@ import { join, dirname } from "path"
 import { homedir } from "os"
 import * as jsoncParser from "jsonc-parser"
 import type { PluginInput } from "@opencode-ai/plugin"
+import { DTC_DEFAULTS, type DtcConfig } from "./dtc/engine"
 
 export interface Commands {
     enabled: boolean
@@ -12,25 +13,9 @@ export interface ExperimentalConfig {
     customPrompts: boolean
 }
 
-export interface SummarizeConfig {
-    failureCooldownMs: number
-}
-
-export interface AutoPruneSignals {
-    topicDrift: boolean
-    volume: boolean
-    idleGap: boolean
-}
-
-export interface AutoPruneConfig {
+/** DTC engine knobs plus the master switch for request-time compression. */
+export interface DtcPluginConfig extends DtcConfig {
     enabled: boolean
-    /** Per-signal switches; only topic changes are enabled by default (LD1). */
-    signals: AutoPruneSignals
-    minMessages: number
-    volumeThreshold: number
-    driftThreshold: number
-    idleGapMs: number
-    cooldownMs: number
 }
 
 export interface ToolConfig {
@@ -46,21 +31,13 @@ export interface PluginConfig {
     language: DcpLanguage
     commands: Commands
     experimental: ExperimentalConfig
-    summarize: SummarizeConfig
-    autoPrune: AutoPruneConfig
+    dtc: DtcPluginConfig
     tool: ToolConfig
 }
 
-const DEFAULT_FAILURE_COOLDOWN_MS = 30_000
-
-export const DEFAULT_AUTO_PRUNE: AutoPruneConfig = {
+export const DEFAULT_DTC: DtcPluginConfig = {
     enabled: true,
-    signals: { topicDrift: true, volume: false, idleGap: false },
-    minMessages: 8,
-    volumeThreshold: 30,
-    driftThreshold: 0.18,
-    idleGapMs: 30 * 60_000,
-    cooldownMs: 5 * 60_000,
+    ...DTC_DEFAULTS,
 }
 
 export const VALID_CONFIG_KEYS = new Set([
@@ -73,26 +50,21 @@ export const VALID_CONFIG_KEYS = new Set([
     "commands.enabled",
     "experimental",
     "experimental.customPrompts",
-    "summarize",
-    "summarize.failureCooldownMs",
-    "autoPrune",
-    "autoPrune.enabled",
-    "autoPrune.signals",
-    "autoPrune.signals.topicDrift",
-    "autoPrune.signals.volume",
-    "autoPrune.signals.idleGap",
-    "autoPrune.minMessages",
-    "autoPrune.volumeThreshold",
-    "autoPrune.driftThreshold",
-    "autoPrune.idleGapMs",
-    "autoPrune.cooldownMs",
+    "dtc",
+    "dtc.enabled",
+    "dtc.tailTurns",
+    "dtc.lowWatermarkRatio",
+    "dtc.targetRatio",
+    "dtc.driftThreshold",
+    "dtc.toolOutputKeepChars",
     "tool",
     "tool.enabled",
 ])
 
-// Keys that only existed in the legacy plugin-owned compression state machine.
-// They are recognized so users get a migration hint instead of an "unknown key"
-// warning; their values are dropped and pruning is handled by native compaction.
+// Keys that only existed in earlier plugin-owned compression architectures.
+// They are recognized so users get a migration hint instead of an "unknown
+// key" warning; their values are dropped. autoPrune.* is superseded by the
+// always-on request-time DTC engine; driftThreshold migrates to dtc.*.
 export const DEPRECATED_CONFIG_KEYS = new Set([
     "compress",
     "compress.mode",
@@ -135,6 +107,20 @@ export const DEPRECATED_CONFIG_KEYS = new Set([
     "protectedFilePatterns",
     "commands.protectedTools",
     "experimental.allowSubAgents",
+    "summarize",
+    "summarize.failureCooldownMs",
+    "autoPrune",
+    "autoPrune.enabled",
+    "autoPrune.signals",
+    "autoPrune.signals.topicDrift",
+    "autoPrune.signals.volume",
+    "autoPrune.signals.idleGap",
+    "autoPrune.autoContinue",
+    "autoPrune.minMessages",
+    "autoPrune.volumeThreshold",
+    "autoPrune.driftThreshold",
+    "autoPrune.idleGapMs",
+    "autoPrune.cooldownMs",
 ])
 
 function getConfigKeyPaths(obj: Record<string, any>, prefix = ""): string[] {
@@ -192,11 +178,7 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
     const commands = config.commands
     if (commands !== undefined) {
         if (typeof commands !== "object" || commands === null || Array.isArray(commands)) {
-            errors.push({
-                key: "commands",
-                expected: "object",
-                actual: typeof commands,
-            })
+            errors.push({ key: "commands", expected: "object", actual: typeof commands })
         } else if (commands.enabled !== undefined && typeof commands.enabled !== "boolean") {
             errors.push({
                 key: "commands.enabled",
@@ -213,11 +195,7 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
             experimental === null ||
             Array.isArray(experimental)
         ) {
-            errors.push({
-                key: "experimental",
-                expected: "object",
-                actual: typeof experimental,
-            })
+            errors.push({ key: "experimental", expected: "object", actual: typeof experimental })
         } else if (
             experimental.customPrompts !== undefined &&
             typeof experimental.customPrompts !== "boolean"
@@ -230,48 +208,23 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
         }
     }
 
-    const summarize = config.summarize
-    if (summarize !== undefined) {
-        if (typeof summarize !== "object" || summarize === null || Array.isArray(summarize)) {
-            errors.push({
-                key: "summarize",
-                expected: "object",
-                actual: typeof summarize,
-            })
+    const dtc = config.dtc
+    if (dtc !== undefined) {
+        if (typeof dtc !== "object" || dtc === null || Array.isArray(dtc)) {
+            errors.push({ key: "dtc", expected: "object", actual: typeof dtc })
         } else {
-            if (
-                summarize.failureCooldownMs !== undefined &&
-                (typeof summarize.failureCooldownMs !== "number" ||
-                    !Number.isFinite(summarize.failureCooldownMs) ||
-                    summarize.failureCooldownMs < 0)
-            ) {
-                errors.push({
-                    key: "summarize.failureCooldownMs",
-                    expected: "non-negative finite number",
-                    actual: JSON.stringify(summarize.failureCooldownMs),
-                })
+            if (dtc.enabled !== undefined && typeof dtc.enabled !== "boolean") {
+                errors.push({ key: "dtc.enabled", expected: "boolean", actual: typeof dtc.enabled })
             }
-        }
-    }
-
-    const autoPrune = config.autoPrune
-    if (autoPrune !== undefined) {
-        if (typeof autoPrune !== "object" || autoPrune === null || Array.isArray(autoPrune)) {
-            errors.push({
-                key: "autoPrune",
-                expected: "object",
-                actual: typeof autoPrune,
-            })
-        } else {
             const numericKeys: Array<[string, number, number]> = [
-                ["minMessages", 1, Number.POSITIVE_INFINITY],
-                ["volumeThreshold", 2, Number.POSITIVE_INFINITY],
+                ["tailTurns", 0, Number.POSITIVE_INFINITY],
+                ["lowWatermarkRatio", 0, 1],
+                ["targetRatio", 0, 1],
                 ["driftThreshold", 0, 1],
-                ["idleGapMs", 0, Number.POSITIVE_INFINITY],
-                ["cooldownMs", 0, Number.POSITIVE_INFINITY],
+                ["toolOutputKeepChars", 200, Number.POSITIVE_INFINITY],
             ]
             for (const [key, min, max] of numericKeys) {
-                const value = (autoPrune as Record<string, any>)[key]
+                const value = (dtc as Record<string, any>)[key]
                 if (
                     value !== undefined &&
                     (typeof value !== "number" ||
@@ -280,41 +233,10 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                         value > max)
                 ) {
                     errors.push({
-                        key: `autoPrune.${key}`,
+                        key: `dtc.${key}`,
                         expected: `number in [${min}, ${max === Number.POSITIVE_INFINITY ? "∞" : max}]`,
                         actual: JSON.stringify(value),
                     })
-                }
-            }
-            for (const key of ["enabled"] as const) {
-                const value = (autoPrune as Record<string, any>)[key]
-                if (value !== undefined && typeof value !== "boolean") {
-                    errors.push({
-                        key: `autoPrune.${key}`,
-                        expected: "boolean",
-                        actual: typeof value,
-                    })
-                }
-            }
-            const signals = (autoPrune as Record<string, any>).signals
-            if (signals !== undefined) {
-                if (typeof signals !== "object" || signals === null || Array.isArray(signals)) {
-                    errors.push({
-                        key: "autoPrune.signals",
-                        expected: "object",
-                        actual: typeof signals,
-                    })
-                } else {
-                    for (const key of ["topicDrift", "volume", "idleGap"] as const) {
-                        const value = (signals as Record<string, any>)[key]
-                        if (value !== undefined && typeof value !== "boolean") {
-                            errors.push({
-                                key: `autoPrune.signals.${key}`,
-                                expected: "boolean",
-                                actual: typeof value,
-                            })
-                        }
-                    }
                 }
             }
         }
@@ -323,38 +245,25 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
     const tool = config.tool
     if (tool !== undefined) {
         if (typeof tool !== "object" || tool === null || Array.isArray(tool)) {
-            errors.push({
-                key: "tool",
-                expected: "object",
-                actual: typeof tool,
-            })
+            errors.push({ key: "tool", expected: "object", actual: typeof tool })
         } else if (tool.enabled !== undefined && typeof tool.enabled !== "boolean") {
-            errors.push({
-                key: "tool.enabled",
-                expected: "boolean",
-                actual: typeof tool.enabled,
-            })
+            errors.push({ key: "tool.enabled", expected: "boolean", actual: typeof tool.enabled })
         }
     }
 
     return errors
 }
 
-/**
- * SR1 migration hint condition: auto prune is on but the user config predates
- * the per-signal switches. The hint fires on every config load where this
- * holds (same always-fires, stateless mechanism as the compress.* hints — no
- * persistent "one-time" flag).
- */
-export function needsSignalsMigrationHint(configData: Record<string, any>): boolean {
+/** Legacy autoPrune.driftThreshold migrates to dtc.driftThreshold. */
+export function legacyDriftThreshold(configData: Record<string, any>): number | undefined {
     const autoPrune = configData.autoPrune
-    return (
-        autoPrune !== null &&
-        typeof autoPrune === "object" &&
-        !Array.isArray(autoPrune) &&
-        autoPrune.enabled === true &&
-        autoPrune.signals === undefined
-    )
+    if (autoPrune === null || typeof autoPrune !== "object" || Array.isArray(autoPrune)) {
+        return undefined
+    }
+    const value = (autoPrune as Record<string, any>).driftThreshold
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+        ? value
+        : undefined
 }
 
 function showConfigWarnings(
@@ -366,31 +275,19 @@ function showConfigWarnings(
     const invalidKeys = getInvalidConfigKeys(configData)
     const deprecatedKeys = getDeprecatedConfigKeys(configData)
     const typeErrors = validateConfigTypes(configData)
-    const signalsHint = needsSignalsMigrationHint(configData)
 
-    if (
-        !signalsHint &&
-        invalidKeys.length === 0 &&
-        deprecatedKeys.length === 0 &&
-        typeErrors.length === 0
-    ) {
+    if (invalidKeys.length === 0 && deprecatedKeys.length === 0 && typeErrors.length === 0) {
         return
     }
 
     const configType = isProject ? "project config" : "config"
     const messages: string[] = []
 
-    if (signalsHint) {
-        messages.push(
-            "auto-prune signals `volume` and `idleGap` are now disabled by default; re-enable via autoPrune.signals.*",
-        )
-    }
-
     if (deprecatedKeys.length > 0) {
         const keyList = deprecatedKeys.slice(0, 3).join(", ")
         const suffix = deprecatedKeys.length > 3 ? ` (+${deprecatedKeys.length - 3} more)` : ""
         messages.push(
-            `Removed legacy compression keys are ignored: ${keyList}${suffix}. Pruning now runs through OpenCode's native compaction.`,
+            `Removed legacy keys are ignored: ${keyList}${suffix}. Compression now runs as dynamic request-time folding (dtc.*).`,
         )
     }
 
@@ -434,10 +331,7 @@ const defaultConfig: PluginConfig = {
     experimental: {
         customPrompts: false,
     },
-    summarize: {
-        failureCooldownMs: DEFAULT_FAILURE_COOLDOWN_MS,
-    },
-    autoPrune: { ...DEFAULT_AUTO_PRUNE },
+    dtc: { ...DEFAULT_DTC },
     tool: {
         enabled: true,
     },
@@ -570,68 +464,37 @@ function mergeExperimental(
     }
 }
 
-function mergeSummarize(
-    base: PluginConfig["summarize"],
-    override?: Partial<PluginConfig["summarize"]>,
-): PluginConfig["summarize"] {
-    if (!override) {
-        return base
-    }
-
-    return {
-        failureCooldownMs:
-            typeof override.failureCooldownMs === "number" &&
-            Number.isFinite(override.failureCooldownMs) &&
-            override.failureCooldownMs >= 0
-                ? override.failureCooldownMs
-                : base.failureCooldownMs,
-    }
-}
-
-function mergeAutoPrune(base: AutoPruneConfig, override?: Record<string, any>): AutoPruneConfig {
+function mergeDtc(
+    base: DtcPluginConfig,
+    override?: Record<string, any>,
+    legacyDrift?: number,
+): DtcPluginConfig {
+    const driftFallback = legacyDrift ?? base.driftThreshold
     if (!override || typeof override !== "object" || Array.isArray(override)) {
-        return base
+        return { ...base, driftThreshold: driftFallback }
     }
 
-    const number = (
-        key: "minMessages" | "volumeThreshold" | "driftThreshold" | "idleGapMs" | "cooldownMs",
-        min: number,
-        max = Number.POSITIVE_INFINITY,
-    ): number =>
+    const number = (key: keyof DtcConfig, min: number, max: number): number =>
         typeof override[key] === "number" &&
         Number.isFinite(override[key]) &&
         override[key] >= min &&
         override[key] <= max
             ? override[key]
-            : base[key]
-
-    const signalsOverride = override.signals
-    const signals: AutoPruneSignals =
-        signalsOverride && typeof signalsOverride === "object" && !Array.isArray(signalsOverride)
-            ? {
-                  topicDrift:
-                      typeof signalsOverride.topicDrift === "boolean"
-                          ? signalsOverride.topicDrift
-                          : base.signals.topicDrift,
-                  volume:
-                      typeof signalsOverride.volume === "boolean"
-                          ? signalsOverride.volume
-                          : base.signals.volume,
-                  idleGap:
-                      typeof signalsOverride.idleGap === "boolean"
-                          ? signalsOverride.idleGap
-                          : base.signals.idleGap,
-              }
-            : base.signals
+            : (base[key] as number)
 
     return {
         enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
-        signals,
-        minMessages: number("minMessages", 1),
-        volumeThreshold: number("volumeThreshold", 2),
-        driftThreshold: number("driftThreshold", 0, 1),
-        idleGapMs: number("idleGapMs", 0),
-        cooldownMs: number("cooldownMs", 0),
+        tailTurns: number("tailTurns", 0, Number.POSITIVE_INFINITY),
+        lowWatermarkRatio: number("lowWatermarkRatio", 0, 1),
+        targetRatio: number("targetRatio", 0, 1),
+        driftThreshold:
+            typeof override.driftThreshold === "number" &&
+            Number.isFinite(override.driftThreshold) &&
+            override.driftThreshold >= 0 &&
+            override.driftThreshold <= 1
+                ? override.driftThreshold
+                : driftFallback,
+        toolOutputKeepChars: number("toolOutputKeepChars", 200, Number.POSITIVE_INFINITY),
     }
 }
 
@@ -650,8 +513,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
         ...config,
         commands: { ...config.commands },
         experimental: { ...config.experimental },
-        summarize: { ...config.summarize },
-        autoPrune: { ...config.autoPrune, signals: { ...config.autoPrune.signals } },
+        dtc: { ...config.dtc },
         tool: { ...config.tool },
     }
 }
@@ -665,8 +527,7 @@ function mergeLayer(config: PluginConfig, data: Record<string, any>): PluginConf
             data.language === "zh" || data.language === "en" ? data.language : config.language,
         commands: mergeCommands(config.commands, data.commands),
         experimental: mergeExperimental(config.experimental, data.experimental),
-        summarize: mergeSummarize(config.summarize, data.summarize),
-        autoPrune: mergeAutoPrune(config.autoPrune, data.autoPrune),
+        dtc: mergeDtc(config.dtc, data.dtc, legacyDriftThreshold(data)),
         tool: mergeTool(config.tool, data.tool),
     }
 }

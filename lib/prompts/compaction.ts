@@ -1,12 +1,13 @@
-export const COMPACTION = `你正在生成当前会话唯一的滚动检查点。输出将替代旧对话前缀，成为后续模型看到的第一段上下文；OpenCode 会在它后面保留尚未压缩的近期尾部。系统级内容（AGENTS.md、项目规则等）由 OpenCode 在每次请求时独立注入，不属于压缩范围，不要复述它们。
+export const COMPACTION = `你正在生成当前会话唯一的滚动检查点。输出将替代旧对话前缀，成为后续模型看到的第一段上下文；OpenCode 会在检查点之后直接保留最近若干轮完整对话（不经压缩，范围由宿主配置决定），这部分尾部不属于压缩对象，不要复述、总结或改写它们。系统级内容（AGENTS.md、项目规则等）由 OpenCode 在每次请求时独立注入，不属于压缩范围，不要复述它们。
 
-这不是聊天记录摘要，而是可直接继续工作的语义剪枝结果。按以下规则压缩：
+这不是聊天记录摘要，而是可直接继续工作的语义剪枝结果。按以下分层规则压缩：
 
-1. 如果输入含有上一份检查点，把仍有效的信息合并进新检查点；不要嵌套、引用或重复旧检查点。
-2. 删除无关闲聊、其他项目或其他仓库的对话、重复解释、已经推翻且不再有诊断价值的方案。
-3. 多次工具调用试错或失败后成功时，只保留最终成功结果；仅当根因会影响后续工作时保留一次简短失败原因。
-4. 同一内容或文件被重复编辑时，只保留最终状态、仍有效的关键决策和必要理由，不复述每轮修改。
-5. 按时间分层决定压缩深度：早期历史和中部历史高度压缩——每个主题只留一句话结论，不留过程；最近历史轻度压缩——尤其是与当前任务相关的内容，保留继续工作所需的关键细节（文件路径、接口、命令、测试结果、错误事实、仍有效的决策及理由），只折叠重复与已失效的内容。最近历史指自上一份检查点以来的新内容。
+1. 滚动合并：如果输入末尾含有 <previous-checkpoint> 标签包裹的上一份检查点，把仍有效的信息合并进新检查点；不要嵌套、引用或逐字重复旧检查点，失效内容直接丢弃。没有该标签时忽略本条。
+2. 远距离内容（早期与中部历史）重度压缩：每个主题只留一句话结论，不留过程、不复述对话往来。
+3. 删除无关闲聊、其他项目或其他仓库的对话、重复解释、已经推翻且不再有诊断价值的方案。
+4. 多次工具调用试错或失败后成功时，只保留最终成功结果；仅当根因会影响后续工作时保留一次简短失败原因。
+5. 同一内容或文件被重复编辑时，只保留最终状态、仍有效的关键决策和必要理由，不复述每轮修改。
+6. 近距离内容（自上一份检查点以来的新内容，且不属于宿主保留的尾部）轻度压缩：当前任务、目标、状态与进行中的情况做汇总但不丢细节——保留继续工作所需的文件路径、接口、命令、测试结果、错误事实、仍有效的决策及理由，只折叠重复与已失效的内容。
 
 使用以下固定结构，省略确实为空的条目：
 
@@ -24,15 +25,16 @@ export const COMPACTION = `你正在生成当前会话唯一的滚动检查点�
 
 保持具体、可验证和项目内聚。进行中的任务必须能凭检查点直接继续，不要依赖已被压缩掉的中间过程。保留文件路径、接口、命令、测试结果和错误事实等硬事实，但不要保留消息 ID、块 ID、锚点、占位符、控制标签或过程性聊天。`
 
-export const COMPACTION_EN = `You are generating the single rolling checkpoint for this session. Your output will replace the old conversation prefix as the first context the model sees afterwards; OpenCode keeps an uncompacted recent tail right after it. System-level content (AGENTS.md, project rules, etc.) is injected independently by OpenCode on every request and is not part of compaction; do not restate it.
+export const COMPACTION_EN = `You are generating the single rolling checkpoint for this session. Your output will replace the old conversation prefix as the first context the model sees afterwards; OpenCode keeps the most recent conversation turns directly after the checkpoint, uncompacted (their range is a host setting). That tail is outside the compaction scope: do not restate, summarize, or rewrite it. System-level content (AGENTS.md, project rules, etc.) is injected independently by OpenCode on every request and is not part of compaction; do not restate it.
 
-This is not a chat-log summary but a semantic pruning result one can resume working from directly. Compress by these rules:
+This is not a chat-log summary but a semantic pruning result one can resume working from directly. Compress by these tiered rules:
 
-1. If the input contains a previous checkpoint, merge the still-valid information into the new checkpoint; do not nest, quote, or duplicate the old one.
-2. Remove irrelevant chitchat, conversations about other projects or repositories, repeated explanations, and approaches that were overturned and no longer carry diagnostic value.
-3. When repeated tool trial-and-error ends in success, keep only the final successful outcome; retain one brief failure reason only if the root cause affects future work.
-4. When the same content or file was edited repeatedly, keep only the final state, the still-valid key decisions, and the necessary rationale; do not restate each round of edits.
-5. Choose compression depth by recency tiers: early and middle history are compressed heavily—one concluding sentence per topic, no process detail; recent history is compressed lightly—especially content related to the current task, keeping the key details needed to continue (file paths, interfaces, commands, test results, error facts, still-valid decisions and their rationale), folding only duplicates and invalidated content. Recent history means everything generated since the previous checkpoint.
+1. Rolling merge: if the input ends with a <previous-checkpoint> block containing the previous checkpoint, merge its still-valid information into the new checkpoint; do not nest, quote, or repeat it verbatim, and drop stale content outright. Ignore this rule when the tag is absent.
+2. Distant content (early and middle history) is compressed heavily: one concluding sentence per topic, no process detail, no dialogue restatement.
+3. Remove irrelevant chitchat, conversations about other projects or repositories, repeated explanations, and approaches that were overturned and no longer carry diagnostic value.
+4. When repeated tool trial-and-error ends in success, keep only the final successful outcome; retain one brief failure reason only if the root cause affects future work.
+5. When the same content or file was edited repeatedly, keep only the final state, the still-valid key decisions, and the necessary rationale; do not restate each round of edits.
+6. Recent content (everything generated since the previous checkpoint, excluding the host-retained tail) is compressed lightly: summarize the current task, goals, status, and in-progress work without losing detail—keep the file paths, interfaces, commands, test results, error facts, and still-valid decisions with rationale needed to continue, folding only duplicates and invalidated content.
 
 Use the following fixed structure, omitting sections that are truly empty:
 

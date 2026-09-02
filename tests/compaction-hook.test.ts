@@ -7,6 +7,7 @@ import { createSessionCompactingHandler } from "../lib/hooks"
 import { COMPACTION, COMPACTION_EN, getCompactionPrompt } from "../lib/prompts/compaction"
 import { PromptStore } from "../lib/prompts/store"
 import { Logger } from "../lib/logger"
+import { DtcState } from "../lib/dtc/state"
 
 function buildPromptStore(): PromptStore {
     return new PromptStore(new Logger(false), mkdtempSync(join(tmpdir(), "dcp-prompts-")), false)
@@ -61,16 +62,28 @@ test("compaction prompt keeps in-progress task details continuation-ready", () =
 })
 
 test("compaction prompt compresses by recency tiers", () => {
-    assert.ok(COMPACTION.includes("早期历史"))
+    assert.ok(COMPACTION.includes("早期"))
     assert.ok(COMPACTION.includes("中部历史"))
-    assert.ok(COMPACTION.includes("高度压缩"))
-    assert.ok(COMPACTION.includes("最近历史"))
+    assert.ok(COMPACTION.includes("重度压缩"))
     assert.ok(COMPACTION.includes("轻度压缩"))
-    assert.match(COMPACTION, /最近历史轻度压缩[^；]*当前任务/)
+    assert.match(COMPACTION, /近距离内容[^：]*轻度压缩/)
+    assert.match(COMPACTION, /远距离内容[^：]*重度压缩/)
 })
 
 test("compaction prompt bounds recent history to content since the previous checkpoint", () => {
-    assert.ok(COMPACTION.includes("最近历史指自上一份检查点以来的新内容"))
+    assert.ok(COMPACTION.includes("自上一份检查点以来的新内容"))
+})
+
+test("compaction prompt explains the rolling previous-checkpoint merge tag", () => {
+    assert.ok(COMPACTION.includes("<previous-checkpoint>"))
+    assert.ok(COMPACTION.includes("滚动合并"))
+    assert.ok(COMPACTION_EN.includes("<previous-checkpoint>"))
+    assert.ok(COMPACTION_EN.includes("Rolling merge"))
+})
+
+test("compaction prompt defers the retained tail to the host and forbids restating it", () => {
+    assert.match(COMPACTION, /检查点之后直接保留最近若干轮完整对话/)
+    assert.match(COMPACTION, /不要复述、总结或改写/)
 })
 
 test("compaction prompt keeps unresolved issues free of in-progress overlap", () => {
@@ -113,10 +126,27 @@ test("PromptStore serves the configured language variant", () => {
     assert.equal(zh.getRuntimePrompts().compaction, COMPACTION)
 })
 
-test("compacting hook replaces the prompt when none is set", async () => {
-    const prompts = buildPromptStore()
-    const handler = createSessionCompactingHandler(prompts, new Logger(false))
+function buildClient(messages: unknown[] = []) {
+    return { session: { messages: async () => ({ data: messages }) } } as any
+}
 
+function buildHandler(messages: unknown[] = []) {
+    const prompts = buildPromptStore()
+    const state = new DtcState()
+    return {
+        prompts,
+        state,
+        handler: createSessionCompactingHandler({
+            prompts,
+            logger: new Logger(false),
+            client: buildClient(messages),
+            state,
+        }),
+    }
+}
+
+test("compacting hook replaces the prompt when none is set", async () => {
+    const { prompts, handler } = buildHandler()
     const output = { context: [] as string[], prompt: undefined as string | undefined }
     await handler({ sessionID: "ses_1" }, output)
 
@@ -127,9 +157,7 @@ test("compacting hook replaces the prompt when none is set", async () => {
 })
 
 test("compacting hook keeps existing context entries when replacing the prompt", async () => {
-    const prompts = buildPromptStore()
-    const handler = createSessionCompactingHandler(prompts, new Logger(false))
-
+    const { handler } = buildHandler()
     const output = { context: ["other-plugin-context"], prompt: undefined as string | undefined }
     await handler({ sessionID: "ses_1" }, output)
 
@@ -137,9 +165,7 @@ test("compacting hook keeps existing context entries when replacing the prompt",
 })
 
 test("compacting hook never overwrites a prompt set by another plugin", async () => {
-    const prompts = buildPromptStore()
-    const handler = createSessionCompactingHandler(prompts, new Logger(false))
-
+    const { prompts, handler } = buildHandler()
     const output = {
         context: ["other-plugin-context"],
         prompt: "another plugin already replaced the compaction prompt",
@@ -153,8 +179,92 @@ test("compacting hook never overwrites a prompt set by another plugin", async ()
 })
 
 test("compacting hook does not throw for any session", async () => {
-    const prompts = buildPromptStore()
-    const handler = createSessionCompactingHandler(prompts, new Logger(false))
-
+    const { handler } = buildHandler()
     await handler({ sessionID: "" }, { context: [], prompt: undefined })
+})
+
+test("compacting hook appends the previous checkpoint inside the merge tag", async () => {
+    const checkpoint = {
+        info: { role: "assistant", summary: true },
+        parts: [{ type: "text", text: "## 历史概要\n旧检查点正文" }],
+    }
+    const { prompts, handler } = buildHandler([checkpoint])
+
+    const output = { context: [] as string[], prompt: undefined as string | undefined }
+    await handler({ sessionID: "ses_1" }, output)
+
+    assert.equal(
+        output.prompt,
+        `${prompts.getRuntimePrompts().compaction}\n\n<previous-checkpoint>\n## 历史概要\n旧检查点正文\n</previous-checkpoint>`,
+    )
+})
+
+test("compacting hook uses the latest checkpoint and skips non-checkpoint messages", async () => {
+    const messages = [
+        {
+            info: { role: "assistant", summary: true },
+            parts: [{ type: "text", text: "第一份检查点" }],
+        },
+        { info: { role: "user" }, parts: [{ type: "text", text: "继续" }] },
+        {
+            info: { role: "assistant", summary: false },
+            parts: [{ type: "text", text: "普通回复" }],
+        },
+        {
+            info: { role: "assistant", summary: true },
+            parts: [{ type: "text", text: "第二份检查点" }],
+        },
+    ]
+    const { handler } = buildHandler(messages)
+
+    const output = { context: [] as string[], prompt: undefined as string | undefined }
+    await handler({ sessionID: "ses_1" }, output)
+
+    assert.match(
+        output.prompt ?? "",
+        /<previous-checkpoint>\n第二份检查点\n<\/previous-checkpoint>/,
+    )
+})
+
+test("compacting hook omits the block when no previous checkpoint exists", async () => {
+    const messages = [
+        { info: { role: "assistant", summary: true }, parts: [{ type: "text", text: "  " }] },
+    ]
+    const { prompts, handler } = buildHandler(messages)
+
+    const output = { context: [] as string[], prompt: undefined as string | undefined }
+    await handler({ sessionID: "ses_1" }, output)
+
+    assert.equal(output.prompt, prompts.getRuntimePrompts().compaction)
+})
+
+test("compacting hook fails open when message fetching throws", async () => {
+    const prompts = buildPromptStore()
+    const client = {
+        session: {
+            messages: async () => {
+                throw new Error("boom")
+            },
+        },
+    } as any
+    const state = new DtcState()
+    const handler = createSessionCompactingHandler({
+        prompts,
+        logger: new Logger(false),
+        client,
+        state,
+    })
+
+    const output = { context: [] as string[], prompt: undefined as string | undefined }
+    await handler({ sessionID: "ses_1" }, output)
+
+    assert.equal(output.prompt, prompts.getRuntimePrompts().compaction)
+})
+
+test("compacting hook arms the one-shot DTC skip for the summarizer input", async () => {
+    const { state, handler } = buildHandler()
+    const output = { context: [] as string[], prompt: undefined as string | undefined }
+    await handler({ sessionID: "ses_arm" }, output)
+    assert.equal(state.consumeCompactionSkip("ses_arm"), true)
+    assert.equal(state.consumeCompactionSkip("ses_arm"), false, "skip is one-shot")
 })
