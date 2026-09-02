@@ -54,7 +54,10 @@ export class DtcState {
         return this.sessions.get(sessionID)?.contextTokens
     }
 
-    /** Called by the compacting hook; consumed by the very next transform. */
+    /** Called by the compacting hook; consumed by the very next transform.
+     * Accepted leak: if the host aborts between the hook and the summarizer
+     * transform, the flag skips folding once for the next unrelated request —
+     * fail-open (extra tokens, never lost information) and self-healing. */
     armCompactionSkip(sessionID: string): void {
         const state = this.session(sessionID)
         state.skipNextTransform = true

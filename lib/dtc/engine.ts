@@ -156,11 +156,21 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const now = (deps.now ?? Date.now)()
 
     let level = Math.max(1, minLevel) as FoldLevel
-    applyLevel(messages, headTurns, zones, level, deps, stats, now)
+    // Bands apply cumulatively: a manual minimum level can start at 2 or 3,
+    // and every band below it must still fold — starting high never skips the
+    // distant zone. Each band folds exactly once per request.
+    let appliedBand = 0
+    const applyUpTo = (lvl: FoldLevel): void => {
+        while (appliedBand < lvl) {
+            appliedBand++
+            applyBand(messages, headTurns, zones, appliedBand, deps, stats, now)
+        }
+    }
+    applyUpTo(level)
     let estimatedAfter = estimateSlice(messages, 0, messages.length)
     while (estimatedAfter > target && level < 3) {
         level = (level + 1) as FoldLevel
-        applyLevel(messages, headTurns, zones, level, deps, stats, now)
+        applyUpTo(level)
         estimatedAfter = estimateSlice(messages, 0, messages.length)
     }
 
@@ -221,29 +231,24 @@ function computeZones(
     return { mStart, cStart }
 }
 
-function applyLevel(
+function applyBand(
     messages: MessageLike[],
     headTurns: Turn[],
     zones: Zones,
-    level: FoldLevel,
+    band: number,
     deps: TransformDeps,
     stats: TransformStats,
     now: number,
 ): void {
-    // Zones fold exactly once: escalation only touches the newly added band,
-    // so cumulative levels never re-fold (and never double-digest) a turn.
-    const prev = level === 1 ? -1 : level - 1
-    if (level >= 1 && prev < 1) {
+    if (band === 1) {
         for (let t = 0; t < zones.mStart; t++) {
             foldDistant(messages, headTurns[t]!, t + 1, deps, stats, now)
         }
-    }
-    if (level >= 2 && prev < 2) {
+    } else if (band === 2) {
         for (let t = zones.mStart; t < zones.cStart; t++) {
             foldMiddle(messages, headTurns[t]!, stats, now)
         }
-    }
-    if (level >= 3 && prev < 3) {
+    } else if (band === 3) {
         for (let t = zones.cStart; t < headTurns.length; t++) {
             foldCurrent(messages, headTurns[t]!, deps.config.toolOutputKeepChars, stats)
         }

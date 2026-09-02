@@ -89,7 +89,7 @@ DCP reads these layers in order; later layers override earlier ones:
 
 ## Migrating from 3.x / 4.0
 
-The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); since 4.1 `language` and `experimental.customPrompts` are gone as well — DCP no longer replaces the host's compaction prompt, so the `dcp-prompts` override machinery retired with it. Such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
+The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); since 5.0 `language` and `experimental.customPrompts` are gone as well — DCP no longer replaces the host's compaction prompt, so the `dcp-prompts` override machinery retired with it. Such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
 
 Behavior change: compression no longer produces a visible "checkpoint turn" and needs no at-rest boundaries or continuation machinery — context folds automatically inside each request, invisible to the session and its state machine. Semantic checkpoints are fully handed back to the host's native compaction (manual `/compact` or the overflow fallback): native prompt, native rolling merge — DCP only contributes the tail-protection defaults and full-fidelity protection of the summarizer input.
 
