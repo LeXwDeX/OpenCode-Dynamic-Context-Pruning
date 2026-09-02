@@ -29,6 +29,9 @@ export interface DtcConfig {
     driftThreshold: number
     /** C-zone tool outputs are head+tail truncated to this many characters. */
     toolOutputKeepChars: number
+    /** Validity axis (#23): M/D zones merge repeated/failed tool runs into one
+     * surviving call (`_merged` meta carries the counts). Wired in #25–#28. */
+    mergeRuns: boolean
 }
 
 export const DTC_DEFAULTS: DtcConfig = {
@@ -37,6 +40,7 @@ export const DTC_DEFAULTS: DtcConfig = {
     targetRatio: 0.7,
     driftThreshold: 0.18,
     toolOutputKeepChars: 4000,
+    mergeRuns: true,
 }
 
 /** Zone width caps in turns: the current-task zone never spans more than
