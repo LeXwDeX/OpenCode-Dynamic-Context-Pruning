@@ -1,11 +1,11 @@
 version: 1
-delivery: compaction-transparency
+delivery: native-compaction-restore
 context:
   kind: branch
-  branch: fix/13-compaction-transparency
+  branch: fix/15-native-compaction-restore
 issues:
-  - 13
+  - 15
 issueKinds:
-  - issue: 13
+  - issue: 15
     kind: kind::fix
-pr: 14
+pr: 16

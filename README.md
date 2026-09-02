@@ -38,7 +38,7 @@ DCP 以**动态分级请求期压缩（DTC）**管理 OpenCode 会话上下文�
 - **模型调用 `dcp_prune` 工具**：瞬时返回。标记话题边界（当前任务区从下一轮重算）并把本会话折叠下限提到 M 级——旧任务内容从下一次请求起被折叠。绝不打断当前工作。
 - **`/dcp fold`**：手动版本，直接把折叠下限提到最深档。
 - **`/dcp status`**：查看当前会话的轮数、token 估算、窗口与降级档位。
-- **宿主自身的 compaction**（`/compact`、上下文溢出兜底）：不受 DTC 影响照常工作；DCP 仍为其提供高质量语义检查点提示词（滚动合并上一份检查点、三层压缩深度、四段固定结构），并把宿主尾部保护默认提升到 4 轮 / 32000 tokens（`compaction.tail_turns` / `preserve_recent_tokens`，用户显式配置优先）。压缩输入经过 transform 钩子时 DTC 自动跳过，保证摘要器看到全保真内容。
+- **宿主自身的 compaction**（`/compact`、上下文溢出兜底）：**100% 原生行为**——原生 anchored-summary 提示词、原生上一份检查点滚动合并，DCP 不做任何替换。DCP 只做两件事：把宿主尾部保护默认提升到 4 轮 / 32000 tokens（`compaction.tail_turns` / `preserve_recent_tokens`，用户显式配置优先）；压缩输入经过 transform 钩子时 DTC 一次性跳过，保证摘要器看到全保真内容。
 
 ## 安装
 
@@ -60,12 +60,8 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
-    "language": "zh",
     "commands": {
         "enabled": true,
-    },
-    "experimental": {
-        "customPrompts": false,
     },
     "dtc": {
         "enabled": true,
@@ -83,7 +79,6 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
 
 | 键                        | 说明                                                                     |
 | ------------------------- | ------------------------------------------------------------------------ |
-| `language`                | 内置压缩提示词语言：`zh`（默认）/ `en`；自定义覆盖文件优先于该配置       |
 | `dtc.enabled`             | 动态分级请求期压缩总开关                                                 |
 | `dtc.tailTurns`           | 尾部保护轮数：最后 N 轮完全不折叠（默认 4）                              |
 | `dtc.lowWatermarkRatio`   | 估算低于窗口 × 该比例时完全不折叠（默认 0.5）                            |
@@ -92,18 +87,11 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
 | `dtc.toolOutputKeepChars` | 当前任务区超长 tool 输出的首尾截断保留字符数（默认 4000）                |
 | `tool.enabled`            | 注册模型可调用的 `dcp_prune` 工具（瞬时标记话题边界，绝不打断工作）      |
 
-启用 `experimental.customPrompts` 后，可将生成的
-`~/.config/opencode/dcp-prompts/defaults/compaction.md` 复制到以下任一覆盖位置：
+## 从 3.x / 4.0 迁移
 
-- 项目：`.opencode/dcp-prompts/overrides/compaction.md`
-- 自定义配置目录：`$OPENCODE_CONFIG_DIR/dcp-prompts/overrides/compaction.md`
-- 全局：`~/.config/opencode/dcp-prompts/overrides/compaction.md`
+3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；4.1 起 `language` 与 `experimental.customPrompts` 也已删除——DCP 不再替换宿主压缩提示词，`dcp-prompts` 覆盖机制随之退役。这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
 
-## 从 3.x 迁移
-
-3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
-
-行为变化：压缩不再产生可见的"检查点回合"，也不再需要任何静息边界或续跑机制——上下文折叠在每次请求内自动完成，会话与状态机零感知。语义检查点仍由宿主自身的 compaction（手动 `/compact` 或溢出兜底）产生，DCP 继续为其提供提示词与尾部保护默认值。
+行为变化：压缩不再产生可见的"检查点回合"，也不再需要任何静息边界或续跑机制——上下文折叠在每次请求内自动完成，会话与状态机零感知。语义检查点完全交还宿主原生 compaction（手动 `/compact` 或溢出兜底）：原生提示词、原生滚动合并，DCP 仅贡献尾部保护默认值与摘要输入的全保真保护。
 
 ## 开发验证
 

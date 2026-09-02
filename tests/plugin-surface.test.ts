@@ -50,7 +50,7 @@ test("plugin registers the DTC transform and its chat.params feed by default", a
     assert.equal(typeof hooks["chat.params"], "function")
 })
 
-test("plugin registers the native session compacting hook (checkpoint quality layer)", async () => {
+test("plugin registers the compacting hook only as the native-compaction fidelity guard", async () => {
     const hooks = await loadPlugin()
     assert.equal(typeof hooks["experimental.session.compacting"], "function")
 })
@@ -66,12 +66,12 @@ test("plugin registers the lifecycle event handler and the dcp_prune tool by def
     assert.equal(Object.keys(definition.args).length, 0)
 })
 
-test("disabling dtc removes the transform and params feed but keeps the rest", async () => {
+test("disabling dtc removes every compaction-adjacent hook (host runs fully native)", async () => {
     await withConfig({ enabled: true, autoUpdate: false, dtc: { enabled: false } }, async () => {
         const hooks = await loadPlugin()
         assert.equal(hooks["experimental.chat.messages.transform"], undefined)
         assert.equal(hooks["chat.params"], undefined)
-        assert.equal(typeof hooks["experimental.session.compacting"], "function")
+        assert.equal(hooks["experimental.session.compacting"], undefined)
         assert.ok(hooks.tool?.dcp_prune)
     })
 })

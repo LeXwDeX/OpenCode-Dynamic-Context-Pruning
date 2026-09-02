@@ -38,7 +38,7 @@ The host fires `experimental.chat.messages.transform` before every model request
 - **The `dcp_prune` model tool**: returns instantly. Marks a topic boundary (the current-task zone restarts at the next turn) and raises this session's minimum fold level to M — old-task content folds from the next request onward. Never interrupts the running turn.
 - **`/dcp fold`**: manual variant; raises the minimum fold level to the deepest tier.
 - **`/dcp status`**: shows turns, token estimate, context window, and the manual fold level for the session.
-- **The host's own compaction** (`/compact`, context-overflow fallback): unaffected by DTC and still fully functional. DCP continues to supply the high-quality semantic checkpoint prompt (rolling merge of the previous checkpoint, tiered compression depth, fixed four-section structure) and raises the host's tail protection defaults to 4 turns / 32000 tokens (`compaction.tail_turns` / `preserve_recent_tokens`; explicit user config always wins). When the compaction input passes through the transform hook, DTC skips it via a one-shot flag so the summarizer sees full-fidelity content.
+- **The host's own compaction** (`/compact`, context-overflow fallback): **100% native behavior** — the host's anchored-summary prompt and its own previous-checkpoint rolling merge stay fully in charge; DCP replaces nothing. DCP contributes exactly two things: it raises the host's tail-protection defaults to 4 turns / 32000 tokens (`compaction.tail_turns` / `preserve_recent_tokens`; explicit user config always wins), and DTC skips the compaction input via a one-shot flag so the summarizer sees full-fidelity content.
 
 ## Install
 
@@ -60,12 +60,8 @@ DCP reads these layers in order; later layers override earlier ones:
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
-    "language": "en",
     "commands": {
         "enabled": true,
-    },
-    "experimental": {
-        "customPrompts": false,
     },
     "dtc": {
         "enabled": true,
@@ -83,7 +79,6 @@ DCP reads these layers in order; later layers override earlier ones:
 
 | Key                       | Description                                                                                                |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `language`                | Bundled compaction prompt language: `zh` (default) / `en`; custom overrides always win                     |
 | `dtc.enabled`             | Master switch for dynamic tiered request-time compression                                                  |
 | `dtc.tailTurns`           | Turns at the end that are never folded (default 4)                                                         |
 | `dtc.lowWatermarkRatio`   | No folding below window × ratio (default 0.5)                                                              |
@@ -92,18 +87,11 @@ DCP reads these layers in order; later layers override earlier ones:
 | `dtc.toolOutputKeepChars` | Head+tail characters kept for oversized current-zone tool outputs (default 4000)                           |
 | `tool.enabled`            | Register the model-invokable `dcp_prune` tool (instant boundary mark, never interrupts)                    |
 
-With `experimental.customPrompts` enabled, copy the generated
-`~/.config/opencode/dcp-prompts/defaults/compaction.md` to any override location:
+## Migrating from 3.x / 4.0
 
-- Project: `.opencode/dcp-prompts/overrides/compaction.md`
-- Custom config dir: `$OPENCODE_CONFIG_DIR/dcp-prompts/overrides/compaction.md`
-- Global: `~/.config/opencode/dcp-prompts/overrides/compaction.md`
+The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); since 4.1 `language` and `experimental.customPrompts` are gone as well — DCP no longer replaces the host's compaction prompt, so the `dcp-prompts` override machinery retired with it. Such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
 
-## Migrating from 3.x
-
-The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
-
-Behavior change: compression no longer produces a visible "checkpoint turn" and needs no at-rest boundaries or continuation machinery — context folds automatically inside each request, invisible to the session and its state machine. Semantic checkpoints are still produced by the host's own compaction (manual `/compact` or the overflow fallback), for which DCP continues to provide the prompt and tail-protection defaults.
+Behavior change: compression no longer produces a visible "checkpoint turn" and needs no at-rest boundaries or continuation machinery — context folds automatically inside each request, invisible to the session and its state machine. Semantic checkpoints are fully handed back to the host's native compaction (manual `/compact` or the overflow fallback): native prompt, native rolling merge — DCP only contributes the tail-protection defaults and full-fidelity protection of the summarizer input.
 
 ## Development
 
