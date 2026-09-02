@@ -16,8 +16,16 @@ export interface SummarizeConfig {
     failureCooldownMs: number
 }
 
+export interface AutoPruneSignals {
+    topicDrift: boolean
+    volume: boolean
+    idleGap: boolean
+}
+
 export interface AutoPruneConfig {
     enabled: boolean
+    /** Per-signal switches; only topic changes are enabled by default (LD1). */
+    signals: AutoPruneSignals
     minMessages: number
     volumeThreshold: number
     driftThreshold: number
@@ -47,6 +55,7 @@ const DEFAULT_FAILURE_COOLDOWN_MS = 30_000
 
 export const DEFAULT_AUTO_PRUNE: AutoPruneConfig = {
     enabled: true,
+    signals: { topicDrift: true, volume: false, idleGap: false },
     minMessages: 8,
     volumeThreshold: 30,
     driftThreshold: 0.18,
@@ -68,6 +77,10 @@ export const VALID_CONFIG_KEYS = new Set([
     "summarize.failureCooldownMs",
     "autoPrune",
     "autoPrune.enabled",
+    "autoPrune.signals",
+    "autoPrune.signals.topicDrift",
+    "autoPrune.signals.volume",
+    "autoPrune.signals.idleGap",
     "autoPrune.minMessages",
     "autoPrune.volumeThreshold",
     "autoPrune.driftThreshold",
@@ -283,6 +296,27 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                     })
                 }
             }
+            const signals = (autoPrune as Record<string, any>).signals
+            if (signals !== undefined) {
+                if (typeof signals !== "object" || signals === null || Array.isArray(signals)) {
+                    errors.push({
+                        key: "autoPrune.signals",
+                        expected: "object",
+                        actual: typeof signals,
+                    })
+                } else {
+                    for (const key of ["topicDrift", "volume", "idleGap"] as const) {
+                        const value = (signals as Record<string, any>)[key]
+                        if (value !== undefined && typeof value !== "boolean") {
+                            errors.push({
+                                key: `autoPrune.signals.${key}`,
+                                expected: "boolean",
+                                actual: typeof value,
+                            })
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -306,6 +340,23 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
     return errors
 }
 
+/**
+ * SR1 migration hint condition: auto prune is on but the user config predates
+ * the per-signal switches. The hint fires on every config load where this
+ * holds (same always-fires, stateless mechanism as the compress.* hints — no
+ * persistent "one-time" flag).
+ */
+export function needsSignalsMigrationHint(configData: Record<string, any>): boolean {
+    const autoPrune = configData.autoPrune
+    return (
+        autoPrune !== null &&
+        typeof autoPrune === "object" &&
+        !Array.isArray(autoPrune) &&
+        autoPrune.enabled === true &&
+        autoPrune.signals === undefined
+    )
+}
+
 function showConfigWarnings(
     ctx: PluginInput,
     configPath: string,
@@ -315,13 +366,25 @@ function showConfigWarnings(
     const invalidKeys = getInvalidConfigKeys(configData)
     const deprecatedKeys = getDeprecatedConfigKeys(configData)
     const typeErrors = validateConfigTypes(configData)
+    const signalsHint = needsSignalsMigrationHint(configData)
 
-    if (invalidKeys.length === 0 && deprecatedKeys.length === 0 && typeErrors.length === 0) {
+    if (
+        !signalsHint &&
+        invalidKeys.length === 0 &&
+        deprecatedKeys.length === 0 &&
+        typeErrors.length === 0
+    ) {
         return
     }
 
     const configType = isProject ? "project config" : "config"
     const messages: string[] = []
+
+    if (signalsHint) {
+        messages.push(
+            "auto-prune signals `volume` and `idleGap` are now disabled by default; re-enable via autoPrune.signals.*",
+        )
+    }
 
     if (deprecatedKeys.length > 0) {
         const keyList = deprecatedKeys.slice(0, 3).join(", ")
@@ -542,8 +605,28 @@ function mergeAutoPrune(base: AutoPruneConfig, override?: Record<string, any>): 
             ? override[key]
             : base[key]
 
+    const signalsOverride = override.signals
+    const signals: AutoPruneSignals =
+        signalsOverride && typeof signalsOverride === "object" && !Array.isArray(signalsOverride)
+            ? {
+                  topicDrift:
+                      typeof signalsOverride.topicDrift === "boolean"
+                          ? signalsOverride.topicDrift
+                          : base.signals.topicDrift,
+                  volume:
+                      typeof signalsOverride.volume === "boolean"
+                          ? signalsOverride.volume
+                          : base.signals.volume,
+                  idleGap:
+                      typeof signalsOverride.idleGap === "boolean"
+                          ? signalsOverride.idleGap
+                          : base.signals.idleGap,
+              }
+            : base.signals
+
     return {
         enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
+        signals,
         minMessages: number("minMessages", 1),
         volumeThreshold: number("volumeThreshold", 2),
         driftThreshold: number("driftThreshold", 0, 1),
@@ -568,7 +651,7 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
         commands: { ...config.commands },
         experimental: { ...config.experimental },
         summarize: { ...config.summarize },
-        autoPrune: { ...config.autoPrune },
+        autoPrune: { ...config.autoPrune, signals: { ...config.autoPrune.signals } },
         tool: { ...config.tool },
     }
 }

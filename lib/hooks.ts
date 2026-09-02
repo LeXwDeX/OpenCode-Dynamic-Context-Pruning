@@ -3,8 +3,9 @@ import type { Logger } from "./logger"
 import type { OpenCodeClient } from "./opencode-client"
 import type { PromptStore } from "./prompts/store"
 import type { PruneSignal, AutoPruner } from "./auto-prune"
-import type { PruneEventName, PruneService } from "./prune-service"
-import { eventSessionID, retrySeconds } from "./prune-service"
+import type { PruneService } from "./prune-service"
+import type { RestFireReason } from "./session-boundary"
+import { eventSessionID, retrySeconds } from "./session-boundary"
 
 interface CompactionOutput {
     context: string[]
@@ -58,80 +59,25 @@ const SIGNAL_LABELS: Record<PruneSignal, string> = {
 }
 
 export interface EventHandlerDeps {
-    client: OpenCodeClient
     prune: PruneService
     autoPruner: AutoPruner
-    config: AutoPruneConfig
     logger: Logger
 }
 
+/**
+ * Every host event feeds the PruneService first: `session.status` / legacy
+ * `session.idle` observations go to the boundary tracker, which classifies
+ * at-rest boundaries (quiet window + live probe) and drives both the
+ * deferred-prune drain and the at-rest auto-prune listener. This handler only
+ * keeps the heuristic pruner's own lifecycle state in sync.
+ */
 export function createEventHandler(deps: EventHandlerDeps) {
-    async function triggerAutoPrune(sessionID: string, signals: PruneSignal[]): Promise<void> {
-        const reason = signals.map((signal) => SIGNAL_LABELS[signal]).join("、")
-        const result = await deps.prune.request({ sessionID, onBusy: "proceed" })
-
-        // busy and no-model mean nothing was attempted this time. consumePending
-        // has already cleared the signals, so this trigger is spent: there is
-        // no retry at the next idle. New signals only arrive from later messages.
-        const attempted =
-            result.status === "succeeded" ||
-            result.status === "failed" ||
-            result.status === "cooldown"
-        if (!attempted) {
-            if (result.status === "busy") {
-                await showToast(
-                    deps.client,
-                    "DCP 自动压缩",
-                    `检测到${reason}，但会话正忙，本次已跳过；原始上下文保持不变。`,
-                    "warning",
-                )
-            }
-            deps.logger.debug("Auto prune skipped", {
-                sessionId: sessionID,
-                status: result.status,
-            })
-            return
-        }
-        deps.autoPruner.markPruned(sessionID)
-
-        if (result.status === "succeeded") {
-            await showToast(deps.client, "DCP 自动压缩", `检测到${reason}，已生成新的语义检查点。`)
-        } else if (result.status === "cooldown") {
-            await showToast(
-                deps.client,
-                "DCP 自动压缩",
-                `检测到${reason}，但上一次压缩失败；${retrySeconds(result.retryAfterMs)} 秒后可重试。`,
-                "warning",
-            )
-        } else {
-            await showToast(
-                deps.client,
-                "DCP 自动压缩",
-                `检测到${reason}，但压缩失败；原始上下文保持不变。`,
-                "warning",
-            )
-        }
-        deps.logger.debug("Auto prune finished", { sessionId: sessionID, status: result.status })
-    }
-
     return async (input: { event: { type: string; properties?: Record<string, any> } }) => {
         const event = input.event
-        const sessionID = eventSessionID(event.properties)
-        if (!sessionID) return
-
-        // Every event feeds the service first: it tracks session activity and
-        // drains deferred prunes at the idle boundary. The `session.idle` event
-        // is itself the authoritative turn-boundary evidence, so auto prune
-        // relies on the service's busy re-check (after model resolution) to
-        // stand down when a new turn races the trigger.
         try {
             deps.prune.observeEvent(event.type, event.properties)
-            if (event.type === "session.idle") {
-                if (!deps.config.enabled) return
-                const signals = deps.autoPruner.consumePending(sessionID)
-                if (signals) await triggerAutoPrune(sessionID, signals)
-                return
-            }
+            const sessionID = eventSessionID(event.properties)
+            if (!sessionID) return
             if (event.type === "session.compacted") {
                 deps.autoPruner.markPruned(sessionID)
                 return
@@ -142,10 +88,80 @@ export function createEventHandler(deps: EventHandlerDeps) {
         } catch (error) {
             deps.logger.warn("Event handler failed", {
                 type: event.type,
-                sessionId: sessionID,
                 error: error instanceof Error ? error.message : String(error),
             })
         }
+    }
+}
+
+async function triggerAutoPrune(
+    deps: AtRestAutoPruneDeps,
+    sessionID: string,
+    signals: PruneSignal[],
+): Promise<void> {
+    const reason = signals.map((signal) => SIGNAL_LABELS[signal]).join("、")
+    const result = await deps.prune.request({ sessionID, onBusy: "proceed" })
+
+    // busy and no-model mean nothing was attempted this time. consumePending
+    // has already cleared the signals, so this trigger is spent: there is no
+    // retry at the next boundary. New signals only arrive from later messages.
+    const attempted =
+        result.status === "succeeded" || result.status === "failed" || result.status === "cooldown"
+    if (!attempted) {
+        if (result.status === "busy") {
+            await showToast(
+                deps.client,
+                "DCP 自动压缩",
+                `检测到${reason}，但会话正忙，本次已跳过；原始上下文保持不变。`,
+                "warning",
+            )
+        }
+        deps.logger.debug("Auto prune skipped", {
+            sessionId: sessionID,
+            status: result.status,
+        })
+        return
+    }
+    deps.autoPruner.markPruned(sessionID)
+
+    if (result.status === "succeeded") {
+        await showToast(deps.client, "DCP 自动压缩", `检测到${reason}，已生成新的语义检查点。`)
+    } else if (result.status === "cooldown") {
+        await showToast(
+            deps.client,
+            "DCP 自动压缩",
+            `检测到${reason}，但上一次压缩失败；${retrySeconds(result.retryAfterMs)} 秒后可重试。`,
+            "warning",
+        )
+    } else {
+        await showToast(
+            deps.client,
+            "DCP 自动压缩",
+            `检测到${reason}，但压缩失败；原始上下文保持不变。`,
+            "warning",
+        )
+    }
+    deps.logger.debug("Auto prune finished", { sessionId: sessionID, status: result.status })
+}
+
+export interface AtRestAutoPruneDeps {
+    client: OpenCodeClient
+    prune: PruneService
+    autoPruner: AutoPruner
+    config: AutoPruneConfig
+    logger: Logger
+}
+
+/**
+ * At-rest listener #2: the heuristic auto prune. The `enabled` gate stays at
+ * this mount point — a tool-only configuration (auto prune disabled) never
+ * registers the listener, so it gains no auto-prune behavior.
+ */
+export function createAtRestAutoPruneListener(deps: AtRestAutoPruneDeps) {
+    return async (sessionID: string, _reason: RestFireReason): Promise<void> => {
+        if (!deps.config.enabled) return
+        const signals = deps.autoPruner.consumePending(sessionID)
+        if (signals) await triggerAutoPrune(deps, sessionID, signals)
     }
 }
 

@@ -44,7 +44,7 @@ test("tool description documents the deferred, non-interrupting execution", () =
     const definition = createPruneTool(buildDeps().deps)
     assert.match(definition.description, /排队/)
     assert.match(definition.description, /尝试/)
-    assert.match(definition.description, /空闲边界/)
+    assert.match(definition.description, /静息边界/)
     assert.doesNotMatch(definition.description, /将在.*执行/)
 })
 
@@ -61,7 +61,7 @@ test("execute reports a queued prune while the session is mid-turn", async () =>
 
     assert.match(output, /排队/)
     assert.match(output, /尝试/)
-    assert.match(output, /空闲边界/)
+    assert.match(output, /静息边界/)
 })
 
 test("execute reports success once compaction has run", async () => {

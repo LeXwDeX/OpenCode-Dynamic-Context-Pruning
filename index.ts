@@ -1,8 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin"
-import { SessionActivityTracker } from "./lib/activity"
 import { AutoPruner } from "./lib/auto-prune"
 import { getConfig } from "./lib/config"
 import {
+    createAtRestAutoPruneListener,
     createChatMessageHandler,
     createCommandExecuteHandler,
     createEventHandler,
@@ -29,13 +29,21 @@ const server: Plugin = (async (ctx) => {
     const summarize = new SummarizeCoordinator(ctx.client, logger, {
         failureCooldownMs: config.summarize.failureCooldownMs,
     })
-    const prune = new PruneService({
-        client: ctx.client,
-        summarize,
-        activity: new SessionActivityTracker(),
-        logger,
-    })
+    const prune = new PruneService({ client: ctx.client, summarize, logger })
     const autoPruner = new AutoPruner(config.autoPrune)
+    // At-rest listener #2 (heuristic auto prune) is mounted only when auto
+    // prune is enabled; the service's deferred drain is always listener #1.
+    if (config.autoPrune.enabled) {
+        prune.boundary.onAtRest(
+            createAtRestAutoPruneListener({
+                client: ctx.client,
+                prune,
+                autoPruner,
+                config: config.autoPrune,
+                logger,
+            }),
+        )
+    }
 
     logger.info("DCP initialized", {
         commands: config.commands.enabled,
@@ -50,14 +58,13 @@ const server: Plugin = (async (ctx) => {
         ...(config.autoPrune.enabled && {
             "chat.message": createChatMessageHandler(autoPruner),
         }),
-        // The event feed drives both auto prune and the tool's deferred prunes,
-        // so it stays registered whenever either surface is on.
+        // The event feed drives both the boundary classification (status/idle
+        // observations) and the tool's deferred prunes, so it stays registered
+        // whenever either surface is on.
         ...((config.autoPrune.enabled || config.tool.enabled) && {
             event: createEventHandler({
-                client: ctx.client,
                 prune,
                 autoPruner,
-                config: config.autoPrune,
                 logger,
             }),
         }),

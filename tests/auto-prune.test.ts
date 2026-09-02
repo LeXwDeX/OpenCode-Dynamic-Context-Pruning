@@ -7,6 +7,7 @@ import { textParts } from "./fixtures"
 function config(overrides: Partial<AutoPruneConfig> = {}): AutoPruneConfig {
     return {
         enabled: true,
+        signals: { topicDrift: true, volume: true, idleGap: true },
         minMessages: 4,
         volumeThreshold: 30,
         driftThreshold: 0.18,
@@ -157,4 +158,44 @@ test("dropSession forgets all state for the session", () => {
     pruner.observeUserMessage("s1", textParts("二"), 1000)
     pruner.dropSession("s1")
     assert.equal(pruner.consumePending("s1"), null)
+})
+
+test("LD1 defaults: only topic drift is enabled out of the box", async () => {
+    const { DEFAULT_AUTO_PRUNE } = await import("../lib/config")
+    assert.deepEqual(DEFAULT_AUTO_PRUNE.signals, {
+        topicDrift: true,
+        volume: false,
+        idleGap: false,
+    })
+})
+
+test("disabled signals never fire even when their thresholds are reached", () => {
+    const pruner = new AutoPruner(
+        config({
+            minMessages: 1,
+            volumeThreshold: 2,
+            idleGapMs: 5_000,
+            signals: { topicDrift: false, volume: false, idleGap: false },
+        }),
+    )
+    for (let index = 0; index < 3; index++) {
+        pruner.observeUserMessage("s1", textParts(SAME_TOPIC[index]), index * 1000)
+    }
+    const result = pruner.observeUserMessage("s1", textParts(OTHER_TOPIC), 60_000)
+    assert.deepEqual(result.signals, [], "topic drift, volume, and idle gap are all switched off")
+})
+
+test("volume can be switched off independently of topic drift", () => {
+    const pruner = new AutoPruner(
+        config({
+            minMessages: 1,
+            volumeThreshold: 2,
+            signals: { topicDrift: true, volume: false, idleGap: true },
+        }),
+    )
+    for (let index = 0; index < 3; index++) {
+        pruner.observeUserMessage("s1", textParts(SAME_TOPIC[index]), index * 1000)
+    }
+    const result = pruner.observeUserMessage("s1", textParts(OTHER_TOPIC), 4000)
+    assert.deepEqual(result.signals, ["topic-drift"], "volume is suppressed, drift still fires")
 })

@@ -1,17 +1,24 @@
-import type { SessionActivityTracker } from "./activity"
 import type { Logger } from "./logger"
 import type { OpenCodeClient } from "./opencode-client"
 import { resolveSessionModel } from "./session-model"
+import {
+    PROBE_TIMEOUT_MS,
+    SessionBoundaryTracker,
+    eventSessionID,
+    retrySeconds,
+} from "./session-boundary"
 import type { SummarizeCoordinator } from "./summarize"
+
+export { eventSessionID, retrySeconds } from "./session-boundary"
 
 /**
  * How a trigger surface wants the service to react when the session is (or may
  * be) mid-turn:
  * - `"defer"`: compaction must never interrupt a running turn. Queue the prune
- *   and execute it at the next observed turn boundary. Used by the
+ *   and execute it at the next confirmed at-rest boundary. Used by the
  *   model-invokable tool, which by definition executes mid-turn.
  * - `"proceed"`: fire at turn boundaries anyway; only stand down on positive
- *   busy evidence. Used by idle-driven auto prune and the manual command.
+ *   busy evidence. Used by at-rest-driven auto prune and the manual command.
  */
 export type PruneBusyPolicy = "defer" | "proceed"
 
@@ -31,8 +38,13 @@ export interface PruneRequest {
 export interface PruneServiceDeps {
     client: OpenCodeClient
     summarize: SummarizeCoordinator
-    activity: SessionActivityTracker
     logger: Logger
+    /** Injectable clock/timers (tests). BOUNDARY_QUIET_MS stays a code constant. */
+    now?: () => number
+    setTimer?: (fn: () => void, ms: number) => unknown
+    clearTimer?: (t: unknown) => void
+    /** Injectable probe deadline (tests only; defaults to PROBE_TIMEOUT_MS). */
+    probeTimeoutMs?: number
 }
 
 type Admission = { action: "go" } | { action: "defer" } | { action: "stand-down" }
@@ -45,30 +57,12 @@ export type PruneEventName =
     | "session.deleted"
     | (string & {})
 
-/** Ceil a cooldown to whole seconds for user-facing copy. */
-export function retrySeconds(retryAfterMs: number): number {
-    return Math.ceil(retryAfterMs / 1000)
-}
-
-/**
- * Resolves the session ID from a host event's properties. Most events carry
- * `sessionID` directly, but some (e.g. `session.deleted`) only carry
- * `info: Session`. Returns `undefined` when neither is a non-empty string.
- */
-export function eventSessionID(properties?: Record<string, any>): string | undefined {
-    const direct = properties?.sessionID
-    if (typeof direct === "string" && direct) return direct
-    const info = properties?.info?.id
-    if (typeof info === "string" && info) return info
-    return undefined
-}
-
 /**
  * The single compression entry point. Every trigger surface (model tool,
  * heuristic auto prune, manual command) goes through `request`; the service
  * owns everything a caller must not have to know: session busy state, the
- * never-interrupt-a-running-turn invariant, deferral to the next turn
- * boundary, session model resolution, and delegation to the native
+ * never-interrupt-a-running-turn invariant, deferral to the next confirmed
+ * at-rest boundary, session model resolution, and delegation to the native
  * summarize coordinator (single-flight + failure cooldown).
  *
  * `request` never rejects: every failure mode is a `PruneOutcome`.
@@ -77,38 +71,61 @@ export class PruneService {
     private readonly deferred = new Set<string>()
     private readonly client: OpenCodeClient
     private readonly summarize: SummarizeCoordinator
-    private readonly activity: SessionActivityTracker
     private readonly logger: Logger
+    private readonly probeTimeoutMs: number
+    /** THE single busy/idle event state machine (absorbed the former
+     * SessionActivityTracker — no second busy cache may exist). */
+    readonly boundary: SessionBoundaryTracker
 
     constructor(deps: PruneServiceDeps) {
         this.client = deps.client
         this.summarize = deps.summarize
-        this.activity = deps.activity
         this.logger = deps.logger
+        this.probeTimeoutMs = deps.probeTimeoutMs ?? PROBE_TIMEOUT_MS
+        this.boundary = new SessionBoundaryTracker({
+            probeBusy: (sessionID) => this.probeBusy(sessionID),
+            logger: deps.logger,
+            now: deps.now,
+            setTimer: deps.setTimer,
+            clearTimer: deps.clearTimer,
+        })
+        // At-rest listener #1: drain deferred (tool) prunes at the confirmed
+        // boundary. Registration order matters — the drain runs before the
+        // heuristic auto-prune listener the plugin entry registers.
+        this.boundary.onAtRest((sessionID) => {
+            if (!this.deferred.delete(sessionID)) return
+            void this.drainQueued(sessionID)
+        })
     }
 
     /**
-     * Feed every host event through here. Drains the deferral queue on
-     * `session.idle` and forgets queued prunes once a compaction (or the
-     * session itself) is gone.
+     * Feed every host event through here. `session.status` and legacy
+     * `session.idle` feed the boundary tracker (quiet window + expiry probe);
+     * the deferral queue drains at the confirmed at-rest classification, and
+     * queued prunes are forgotten once a compaction (or the session itself)
+     * is gone.
      */
     observeEvent(type: PruneEventName, properties?: Record<string, any>): void {
-        this.activity.observe(type, properties)
         const sessionID = eventSessionID(properties)
-        if (!sessionID) return
-
-        if (type === "session.idle") {
-            if (!this.deferred.delete(sessionID)) return
-            void this.drainQueued(sessionID)
+        if (type === "session.status") {
+            this.boundary.observeStatus(sessionID, properties?.status?.type)
             return
         }
+        if (type === "session.idle") {
+            // Legacy first-class input: dual-published legs are absorbed by
+            // the dedup; on status-less hosts it is the only boundary signal.
+            this.boundary.observeLegacyIdle(sessionID)
+            return
+        }
+        if (!sessionID) return
         if (type === "session.compacted") {
             this.deferred.delete(sessionID)
+            this.boundary.observeCompacted(sessionID)
             return
         }
         if (type === "session.deleted") {
             this.deferred.delete(sessionID)
-            this.activity.dropSession(sessionID)
+            this.boundary.observeDeleted(sessionID)
         }
     }
 
@@ -127,10 +144,10 @@ export class PruneService {
 
         // Last line of defense: ask the host for its live session status right
         // before the native call. Event-derived state can lag; this shrinks the
-        // race window between "we saw idle" and "the host mutates the session"
+        // race window between "we saw rest" and "the host mutates the session"
         // to a single back-to-back HTTP hop. Fail open when the host does not
         // expose the status endpoint.
-        const serverBusy = await this.isBusyOnServer(request.sessionID)
+        const serverBusy = await this.probeBusy(request.sessionID)
         if (serverBusy === true) {
             const fallback = await this.outcomeFor(request, { action: "stand-down" })
             if (fallback) return fallback
@@ -153,13 +170,13 @@ export class PruneService {
     }
 
     /**
-     * Executes a queued prune at the idle boundary. The tool already promised
-     * its caller this prune would run; losing the busy race must not silently
-     * break that promise, so a busy outcome re-queues for the next idle
-     * boundary. Every other outcome is terminal: it is logged and never
-     * retried — new prune demand arrives through new triggers only.
-     * Execution is re-guarded on every attempt, so re-queueing never violates
-     * the never-interrupt invariant.
+     * Executes a queued prune at the confirmed at-rest boundary. The tool
+     * already promised its caller this prune would run; losing the busy race
+     * must not silently break that promise, so a busy outcome re-queues for
+     * the next at-rest boundary. Every other outcome is terminal: it is
+     * logged and never retried — new prune demand arrives through new
+     * triggers only. Execution is re-guarded on every attempt, so re-queueing
+     * never violates the never-interrupt invariant.
      */
     private async drainQueued(sessionID: string): Promise<void> {
         let outcome: PruneOutcome
@@ -193,7 +210,7 @@ export class PruneService {
         if (admission.action === "go") return null
         if (admission.action === "stand-down") return { status: "busy" }
         this.deferred.add(request.sessionID)
-        this.logger.debug("Prune deferred to the next session idle boundary", {
+        this.logger.debug("Prune deferred to the next session at-rest boundary", {
             sessionId: request.sessionID,
         })
         return { status: "deferred" }
@@ -205,28 +222,36 @@ export class PruneService {
         // call must queue for the next turn boundary. Only the event feed can
         // drain it, which is why the event hook stays on whenever the tool is.
         if (request.onBusy === "defer") return { action: "defer" }
-        if (this.activity.state(request.sessionID) === "busy") return { action: "stand-down" }
+        if (this.boundary.state(request.sessionID) === "busy") return { action: "stand-down" }
         return { action: "go" }
     }
 
     /**
-     * Queries the host's live session status. Returns `null` when the answer
-     * is unknown (endpoint or SDK method missing, request failed) — callers
-     * must fail open in that case.
+     * THE single live busy probe, reused verbatim by the boundary tracker's
+     * expiry check. Bounded by a finite deadline: a never-returning probe
+     * resolves `null` within the timeout (fail-open). Returns `null` when the
+     * answer is unknown (endpoint or SDK method missing, request failed,
+     * timeout) — callers must fail open in that case.
      */
-    private async isBusyOnServer(sessionID: string): Promise<boolean | null> {
-        try {
-            const statusFn = (this.client.session as unknown as Record<string, unknown>).status
-            if (typeof statusFn !== "function") return null
-            const response = await (statusFn as (input?: unknown) => Promise<unknown>).call(
-                this.client.session,
-            )
-            const map = (response as { data?: unknown })?.data ?? response
-            const info = (map as Record<string, { type?: unknown }>)?.[sessionID]
-            // `retry` is an active turn between attempts — never compact it.
-            return info?.type === "busy" || info?.type === "retry"
-        } catch {
-            return null
-        }
+    async probeBusy(sessionID: string): Promise<boolean | null> {
+        const statusFn = (this.client.session as unknown as Record<string, unknown>).status
+        if (typeof statusFn !== "function") return null
+        const query = (async () => {
+            try {
+                return await (statusFn as (input?: unknown) => Promise<unknown>).call(
+                    this.client.session,
+                )
+            } catch {
+                return null
+            }
+        })()
+        const response = await Promise.race([
+            query,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), this.probeTimeoutMs)),
+        ])
+        const map = (response as { data?: unknown })?.data ?? response
+        const info = (map as Record<string, { type?: unknown }>)?.[sessionID]
+        // `retry` is an active turn between attempts — never compact it.
+        return info?.type === "busy" || info?.type === "retry"
     }
 }

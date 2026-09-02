@@ -122,12 +122,13 @@ export class AutoPruner {
         if (state.count + 1 < this.config.minMessages) return []
 
         const signals: PruneSignal[] = []
+        const enabled = this.config.signals
 
-        if (state.count > 0 && at - state.lastAt >= this.config.idleGapMs) {
+        if (enabled.idleGap && state.count > 0 && at - state.lastAt >= this.config.idleGapMs) {
             signals.push("idle-gap")
         }
 
-        if (state.count >= DRIFT_BASELINE && text) {
+        if (enabled.topicDrift && state.count >= DRIFT_BASELINE && text) {
             const current = tokenize(text)
             if (current.size >= MIN_DRIFT_TOKENS) {
                 let max = 0
@@ -142,7 +143,7 @@ export class AutoPruner {
             }
         }
 
-        if (state.count + 1 >= this.config.volumeThreshold) signals.push("volume")
+        if (enabled.volume && state.count + 1 >= this.config.volumeThreshold) signals.push("volume")
 
         return signals
     }
