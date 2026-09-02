@@ -1,11 +1,10 @@
 version: 1
-delivery: prevent-semantic-pruning
+delivery: redesign-trigger-gating
 context:
   kind: branch
-  branch: fix/9-prevent-semantic-pruning
+  branch: refactor/11-redesign-trigger-gating
 issues:
-  - 9
+  - 11
 issueKinds:
-  - issue: 9
-    kind: kind::fix
-pr: 10
+  - issue: 11
+    kind: kind::refactor
