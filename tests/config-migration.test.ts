@@ -104,10 +104,76 @@ test("default config no longer exposes compression or manual mode", async () => 
 
     assert.equal("compress" in config, false)
     assert.equal("manualMode" in config, false)
+    assert.equal("summarize" in config, false)
+    assert.equal("autoPrune" in config, false)
     assert.equal(config.enabled, true)
     assert.equal(config.commands.enabled, true)
     assert.equal(config.experimental.customPrompts, false)
-    assert.equal(config.summarize.failureCooldownMs, 30_000)
+    assert.equal(config.dtc.enabled, true)
+    assert.equal(config.dtc.tailTurns, 4)
+})
+
+test("autoPrune and summarize keys are deprecated, not unknown", async () => {
+    const { getDeprecatedConfigKeys, getInvalidConfigKeys } = await import("../lib/config")
+    const input = {
+        autoPrune: { enabled: true, signals: { topicDrift: true }, cooldownMs: 1000 },
+        summarize: { failureCooldownMs: 30_000 },
+    }
+    const deprecated = getDeprecatedConfigKeys(input)
+    const invalid = getInvalidConfigKeys(input)
+    assert.ok(deprecated.includes("autoPrune"))
+    assert.ok(deprecated.includes("autoPrune.signals.topicDrift"))
+    assert.ok(deprecated.includes("summarize.failureCooldownMs"))
+    assert.equal(invalid.length, 0)
+})
+
+test("legacy autoPrune.driftThreshold migrates to dtc.driftThreshold", async () => {
+    writeFileSync(
+        join(configHome, "opencode", "dcp.jsonc"),
+        JSON.stringify({ autoPrune: { driftThreshold: 0.1 } }),
+        "utf-8",
+    )
+
+    const { getConfig } = await import("../lib/config")
+    const config = getConfig(buildCtx())
+
+    assert.equal(config.dtc.driftThreshold, 0.1)
+    writeFileSync(join(configHome, "opencode", "dcp.jsonc"), "{}", "utf-8")
+})
+
+test("an explicit dtc.driftThreshold wins over the legacy key", async () => {
+    writeFileSync(
+        join(configHome, "opencode", "dcp.jsonc"),
+        JSON.stringify({ dtc: { driftThreshold: 0.3 }, autoPrune: { driftThreshold: 0.1 } }),
+        "utf-8",
+    )
+
+    const { getConfig } = await import("../lib/config")
+    const config = getConfig(buildCtx())
+
+    assert.equal(config.dtc.driftThreshold, 0.3)
+    writeFileSync(join(configHome, "opencode", "dcp.jsonc"), "{}", "utf-8")
+})
+
+test("dtc keys are valid and type-checked", async () => {
+    const { VALID_CONFIG_KEYS, validateConfigTypes } = await import("../lib/config")
+    for (const key of [
+        "dtc",
+        "dtc.enabled",
+        "dtc.tailTurns",
+        "dtc.lowWatermarkRatio",
+        "dtc.targetRatio",
+        "dtc.driftThreshold",
+        "dtc.toolOutputKeepChars",
+    ]) {
+        assert.equal(VALID_CONFIG_KEYS.has(key), true, `${key} must be a valid config key`)
+    }
+    const errors = validateConfigTypes({
+        dtc: { enabled: "yes", tailTurns: -1, targetRatio: 5 },
+    })
+    assert.ok(errors.some((e) => e.key === "dtc.enabled"))
+    assert.ok(errors.some((e) => e.key === "dtc.tailTurns"))
+    assert.ok(errors.some((e) => e.key === "dtc.targetRatio"))
 })
 
 test("invalid supported values warn but do not replace safe defaults", async () => {
@@ -116,7 +182,7 @@ test("invalid supported values warn but do not replace safe defaults", async () 
         JSON.stringify({
             enabled: "yes",
             commands: { enabled: "yes" },
-            summarize: { failureCooldownMs: -1 },
+            dtc: { tailTurns: -3, toolOutputKeepChars: 10 },
         }),
         "utf-8",
     )
@@ -126,5 +192,7 @@ test("invalid supported values warn but do not replace safe defaults", async () 
 
     assert.equal(config.enabled, true)
     assert.equal(config.commands.enabled, true)
-    assert.equal(config.summarize.failureCooldownMs, 30_000)
+    assert.equal(config.dtc.tailTurns, 4)
+    assert.equal(config.dtc.toolOutputKeepChars, 4000)
+    writeFileSync(join(configHome, "opencode", "dcp.jsonc"), "{}", "utf-8")
 })
