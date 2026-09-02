@@ -1,101 +1,42 @@
 import type { PluginConfig } from "./config"
 import type { Logger } from "./logger"
 import type { OpenCodeClient } from "./opencode-client"
-import type { PromptStore } from "./prompts/store"
 import { segmentTurns, transformMessages } from "./dtc/engine"
 import type { DtcState } from "./dtc/state"
 import type { MessageLike } from "./dtc/types"
 import { estimateSlice } from "./dtc/digest"
 import { eventSessionID } from "./session-events"
 
-interface CompactionOutput {
-    context: string[]
-    prompt?: string
-}
-
 /** Host-side tail protection DCP applies unless the user configured it. */
 export const DEFAULT_TAIL_TURNS = 4
 export const DEFAULT_PRESERVE_RECENT_TOKENS = 32_000
 
-/**
- * Extracts the text of the most recent completed checkpoint (assistant
- * message flagged `summary`) from a session messages response. The host
- * hides prior checkpoint pairs from the summarizer input and only re-exposes
- * them through its own default prompt — which DCP replaces. Fetching the
- * previous checkpoint here is what keeps the checkpoint rolling instead of
- * restarting from the retained tail each compaction.
- */
-export function extractPreviousCheckpoint(messages: unknown): string | undefined {
-    if (!Array.isArray(messages)) return undefined
-    for (let index = messages.length - 1; index >= 0; index--) {
-        const message = messages[index] as { info?: any; parts?: any[] } | undefined
-        const info = message?.info
-        if (info?.role !== "assistant" || info.summary !== true) continue
-        const parts = Array.isArray(message?.parts) ? message.parts : []
-        const text = parts
-            .filter((part) => part?.type === "text" && typeof part.text === "string")
-            .map((part) => part.text.trim())
-            .filter(Boolean)
-            .join("\n\n")
-            .trim()
-        if (text) return text
-    }
-    return undefined
-}
-
-async function fetchPreviousCheckpoint(
-    client: OpenCodeClient,
-    sessionID: string,
-): Promise<string | undefined> {
-    if (!sessionID) return undefined
-    try {
-        const response = await client.session.messages({ path: { id: sessionID } })
-        return extractPreviousCheckpoint(response.data ?? response)
-    } catch {
-        // Fail-open: without the previous checkpoint the compaction still
-        // runs, it just restarts from the raw history.
-        return undefined
-    }
-}
-
 export interface SessionCompactingDeps {
-    prompts: PromptStore
-    logger: Logger
-    client: OpenCodeClient
     state: DtcState
+    logger: Logger
 }
 
+/**
+ * The host fires this hook right before it runs the messages transform over
+ * the compaction input (fork session/compaction.ts :373 → :380). DCP does NOT
+ * touch the compaction prompt: the host's native anchored-summary template
+ * (with its own previous-summary rolling merge) stays fully in charge of
+ * `/compact` and the overflow fallback. The hook's single job is arming the
+ * one-shot DTC skip so the summarizer always sees full-fidelity input instead
+ * of request-time folds.
+ */
 export function createSessionCompactingHandler(deps: SessionCompactingDeps) {
-    return async (input: { sessionID: string }, output: CompactionOutput): Promise<void> => {
+    return async (input: { sessionID: string }, _output?: unknown): Promise<void> => {
         try {
-            // The host fires this hook and then runs the messages transform
-            // over the compaction input in the same flow (fork
-            // session/compaction.ts :373 → :380). Folding that input would
-            // strip detail the summarizer needs, so arm a one-shot skip.
             deps.state.armCompactionSkip(input.sessionID)
-            deps.prompts.reload()
-            const prompt = deps.prompts.getRuntimePrompts().compaction
-            const previous = await fetchPreviousCheckpoint(deps.client, input.sessionID)
-            const withCheckpoint = previous
-                ? `${prompt}\n\n<previous-checkpoint>\n${previous}\n</previous-checkpoint>`
-                : prompt
-            if (!output.prompt) {
-                output.prompt = withCheckpoint
-            } else if (!output.context.includes(prompt)) {
-                output.context.push(withCheckpoint)
-            }
-            deps.logger.debug("Applied semantic pruning prompt", {
+            deps.logger.debug("Armed DTC skip for the native compaction input", {
                 sessionId: input.sessionID,
-                carriedCheckpoint: Boolean(previous),
             })
         } catch (error) {
-            deps.logger.warn(
-                "Failed to apply semantic pruning prompt; native compaction continues",
-                {
-                    sessionId: input.sessionID,
-                    error: error instanceof Error ? error.message : String(error),
-                },
-            )
+            deps.logger.warn("Failed to arm the compaction skip; native compaction continues", {
+                sessionId: input.sessionID,
+                error: error instanceof Error ? error.message : String(error),
+            })
         }
     }
 }

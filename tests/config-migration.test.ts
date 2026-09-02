@@ -106,24 +106,30 @@ test("default config no longer exposes compression or manual mode", async () => 
     assert.equal("manualMode" in config, false)
     assert.equal("summarize" in config, false)
     assert.equal("autoPrune" in config, false)
+    assert.equal("language" in config, false)
+    assert.equal("experimental" in config, false)
     assert.equal(config.enabled, true)
     assert.equal(config.commands.enabled, true)
-    assert.equal(config.experimental.customPrompts, false)
     assert.equal(config.dtc.enabled, true)
     assert.equal(config.dtc.tailTurns, 4)
 })
 
-test("autoPrune and summarize keys are deprecated, not unknown", async () => {
+test("autoPrune, summarize, language and experimental keys are deprecated, not unknown", async () => {
     const { getDeprecatedConfigKeys, getInvalidConfigKeys } = await import("../lib/config")
     const input = {
         autoPrune: { enabled: true, signals: { topicDrift: true }, cooldownMs: 1000 },
         summarize: { failureCooldownMs: 30_000 },
+        language: "zh",
+        experimental: { customPrompts: true },
     }
     const deprecated = getDeprecatedConfigKeys(input)
     const invalid = getInvalidConfigKeys(input)
     assert.ok(deprecated.includes("autoPrune"))
     assert.ok(deprecated.includes("autoPrune.signals.topicDrift"))
     assert.ok(deprecated.includes("summarize.failureCooldownMs"))
+    assert.ok(deprecated.includes("language"))
+    assert.ok(deprecated.includes("experimental"))
+    assert.ok(deprecated.includes("experimental.customPrompts"))
     assert.equal(invalid.length, 0)
 })
 

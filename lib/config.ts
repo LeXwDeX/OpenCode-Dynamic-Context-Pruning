@@ -9,10 +9,6 @@ export interface Commands {
     enabled: boolean
 }
 
-export interface ExperimentalConfig {
-    customPrompts: boolean
-}
-
 /** DTC engine knobs plus the master switch for request-time compression. */
 export interface DtcPluginConfig extends DtcConfig {
     enabled: boolean
@@ -22,15 +18,11 @@ export interface ToolConfig {
     enabled: boolean
 }
 
-export type DcpLanguage = "zh" | "en"
-
 export interface PluginConfig {
     enabled: boolean
     autoUpdate: boolean
     debug: boolean
-    language: DcpLanguage
     commands: Commands
-    experimental: ExperimentalConfig
     dtc: DtcPluginConfig
     tool: ToolConfig
 }
@@ -45,11 +37,8 @@ export const VALID_CONFIG_KEYS = new Set([
     "enabled",
     "autoUpdate",
     "debug",
-    "language",
     "commands",
     "commands.enabled",
-    "experimental",
-    "experimental.customPrompts",
     "dtc",
     "dtc.enabled",
     "dtc.tailTurns",
@@ -107,6 +96,9 @@ export const DEPRECATED_CONFIG_KEYS = new Set([
     "protectedFilePatterns",
     "commands.protectedTools",
     "experimental.allowSubAgents",
+    "language",
+    "experimental",
+    "experimental.customPrompts",
     "summarize",
     "summarize.failureCooldownMs",
     "autoPrune",
@@ -167,14 +159,6 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
         errors.push({ key: "debug", expected: "boolean", actual: typeof config.debug })
     }
 
-    if (config.language !== undefined && config.language !== "zh" && config.language !== "en") {
-        errors.push({
-            key: "language",
-            expected: '"zh" or "en"',
-            actual: JSON.stringify(config.language),
-        })
-    }
-
     const commands = config.commands
     if (commands !== undefined) {
         if (typeof commands !== "object" || commands === null || Array.isArray(commands)) {
@@ -184,26 +168,6 @@ export function validateConfigTypes(config: Record<string, any>): ValidationErro
                 key: "commands.enabled",
                 expected: "boolean",
                 actual: typeof commands.enabled,
-            })
-        }
-    }
-
-    const experimental = config.experimental
-    if (experimental !== undefined) {
-        if (
-            typeof experimental !== "object" ||
-            experimental === null ||
-            Array.isArray(experimental)
-        ) {
-            errors.push({ key: "experimental", expected: "object", actual: typeof experimental })
-        } else if (
-            experimental.customPrompts !== undefined &&
-            typeof experimental.customPrompts !== "boolean"
-        ) {
-            errors.push({
-                key: "experimental.customPrompts",
-                expected: "boolean",
-                actual: typeof experimental.customPrompts,
             })
         }
     }
@@ -324,12 +288,8 @@ const defaultConfig: PluginConfig = {
     enabled: true,
     autoUpdate: true,
     debug: false,
-    language: "zh",
     commands: {
         enabled: true,
-    },
-    experimental: {
-        customPrompts: false,
     },
     dtc: { ...DEFAULT_DTC },
     tool: {
@@ -448,22 +408,6 @@ function mergeCommands(
     }
 }
 
-function mergeExperimental(
-    base: PluginConfig["experimental"],
-    override?: Partial<PluginConfig["experimental"]>,
-): PluginConfig["experimental"] {
-    if (!override) {
-        return base
-    }
-
-    return {
-        customPrompts:
-            typeof override.customPrompts === "boolean"
-                ? override.customPrompts
-                : base.customPrompts,
-    }
-}
-
 function mergeDtc(
     base: DtcPluginConfig,
     override?: Record<string, any>,
@@ -512,7 +456,6 @@ function deepCloneConfig(config: PluginConfig): PluginConfig {
     return {
         ...config,
         commands: { ...config.commands },
-        experimental: { ...config.experimental },
         dtc: { ...config.dtc },
         tool: { ...config.tool },
     }
@@ -523,10 +466,7 @@ function mergeLayer(config: PluginConfig, data: Record<string, any>): PluginConf
         enabled: typeof data.enabled === "boolean" ? data.enabled : config.enabled,
         autoUpdate: typeof data.autoUpdate === "boolean" ? data.autoUpdate : config.autoUpdate,
         debug: typeof data.debug === "boolean" ? data.debug : config.debug,
-        language:
-            data.language === "zh" || data.language === "en" ? data.language : config.language,
         commands: mergeCommands(config.commands, data.commands),
-        experimental: mergeExperimental(config.experimental, data.experimental),
         dtc: mergeDtc(config.dtc, data.dtc, legacyDriftThreshold(data)),
         tool: mergeTool(config.tool, data.tool),
     }
