@@ -20,11 +20,11 @@ CI (`.github/workflows/pr-checks.yml`): format → typecheck → test → build 
 
 OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compaction, heuristic auto-prune, model tool, and command hooks.
 
-- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting`, observes user messages (`chat.message`), turns events into auto-prune triggers (`session.idle`/`session.compacted`/`session.deleted`), and handles `/dcp summarize` via `command.execute.before` (the `dcp` command itself is registered through the `config` hook).
-- **`lib/auto-prune.ts`** — CJK-aware tokenizer + Jaccard similarity; `AutoPruner` tracks per-session signals (topic-drift, volume, idle-gap), pending triggers, and cooldowns.
-- **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description authorizes only real topic changes or explicit user requests. The tool always requests with the `defer` busy policy: a mid-turn call queues the prune for the next turn boundary instead of interrupting the running turn.
-- **`lib/prune-service.ts`** — `PruneService`: the single compression entry point. Every trigger surface goes through `request({ sessionID, onBusy })`; it owns session busy-gating (never compacts a running turn), the deferral queue drained on `session.idle` (a drain that loses the busy race re-queues for the next idle instead of dropping the promise), session model resolution, and delegation to `SummarizeCoordinator`. Before the native call it probes the host's live `GET /session/status` (fail-open when the endpoint is missing) to shrink the idle-check race to one HTTP hop, and maps a host busy-rejection to the `busy` outcome. All outcomes are returned as values (`PruneOutcome`); `request` never rejects.
-- **`lib/activity.ts`** — `SessionActivityTracker`: per-session busy/idle state derived from `session.status` (`busy`/`retry` → busy) / `session.idle` events. Unknown state fails open (proceed) for trigger surfaces that fire at turn boundaries; stale busy evidence decays to unknown after a TTL.
+- **`lib/hooks.ts`** — Applies the semantic pruning prompt during `experimental.session.compacting`, observes user messages (`chat.message`), feeds every host event to `PruneService.observeEvent` (`session.status` primary / legacy `session.idle` first-class / `session.compacted` / `session.deleted`), and handles `/dcp summarize` via `command.execute.before` (the `dcp` command itself is registered through the `config` hook). The heuristic auto-prune runs as at-rest listener #2 via `createAtRestAutoPruneListener` (its `enabled` gate lives at that mount point).
+- **`lib/auto-prune.ts`** — CJK-aware tokenizer + Jaccard similarity; `AutoPruner` tracks per-session signals (topic-drift, volume, idle-gap), pending triggers, and cooldowns. Each signal is gated by its `autoPrune.signals.<name>` boolean; only `topicDrift` defaults on.
+- **`lib/prune-tool.ts`** — Model-invokable `dcp_prune` tool; its description authorizes only real topic changes or explicit user requests. The tool always requests with the `defer` busy policy: a mid-turn call queues the prune for the next confirmed at-rest boundary instead of interrupting the running turn.
+- **`lib/prune-service.ts`** — `PruneService`: the single compression entry point. Every trigger surface goes through `request({ sessionID, onBusy })`; it owns session busy-gating (never compacts a running turn), the deferral queue drained at the confirmed at-rest classification (a drain that loses the busy race re-queues for the next at-rest instead of dropping the promise), session model resolution, and delegation to `SummarizeCoordinator`. Before the native call it probes the host's live `GET /session/status` with a finite deadline (fail-open on missing endpoint, error, or timeout) to shrink the race to one HTTP hop, and maps a host busy-rejection to the `busy` outcome. All outcomes are returned as values (`PruneOutcome`); `request` never rejects.
+- **`lib/session-boundary.ts`** — `SessionBoundaryTracker`: THE single per-session busy/idle state machine (it absorbed the former `SessionActivityTracker` — never reintroduce a second busy cache). An idle observation opens a 2s quiet window (`BOUNDARY_QUIET_MS` is a code constant, deliberately NOT config); window expiry runs a live probe; `busy`/`retry` at any point cancels the window (relay idle). A window that survives expiry plus a `false`/`null` probe classifies AT-REST and fires `onAtRest` listeners in registration order (1. deferred drain, 2. auto-prune), each error-isolated. Probe results are generation-guarded (a stale in-flight result never fires). Hosts that never send `session.status` degrade to legacy-idle+2s where every turn-end idle re-arms from at-rest. Table is LRU-bounded (500); busy evidence TTL-decays to unknown (fail-open). Also owns `eventSessionID`/`retrySeconds`; `prune-service` imports from here (one-way), never the reverse.
 - **`lib/session-model.ts`** — Shared latest-user-model resolution from session messages.
 - **`lib/summarize.ts`** — Session-level native summarize coordinator with single-flight and failure cooldown. A host busy-rejection surfaces as `rejected`/`busy` (word-bounded "busy", structured 409, or a `Busy*` error name) without arming the cooldown.
 - **`lib/prompts/compaction.ts`** — Bilingual (`language` config: `zh` default / `en`) four-section checkpoint prompt: 历史概要 → 已完成任务的概括 → 进行中任务详情 → 未解决问题. Never restates system-level content (AGENTS.md etc.) — OpenCode injects it into the system prompt on every request, outside the compacted message history.
@@ -45,7 +45,8 @@ OpenCode plugin (`@opencode-ai/plugin`). Entry: `index.ts` returns native compac
 - Test runner: `node:test` (not jest/vitest). Tests use `node:assert/strict`.
 - Use the documented Node.js runner. Bun is not supported because it does not implement nested `t.test()` compatibly.
 - Tests assert on **Chinese prompt text** in `tests/compaction-hook.test.ts`.
-- `tests/plugin-surface.test.ts` pins the exported hook surface of `index.ts` (which hooks fire under which config flags).
+- `tests/plugin-surface.test.ts` pins the exported hook surface of `index.ts` (which hooks fire under which config flags) plus the `autoPrune.signals.*` defaults/LD1 gating.
+- `tests/boundary-tracker.test.ts` pins the tracker invariants deterministically (fake timers): window absorption, single window, dedup, probe-in-flight generation guard, T3 degrade re-arm, dispatch isolation, LRU/identity guard.
 - `tests/config-migration.test.ts` covers legacy `compress.*` keys: they are recognized (migration hint) but ignored — never re-implement them.
 - `tests/summarize.test.ts` covers native delegation, session isolation, single-flight, failure cooldown and restart behavior.
 
@@ -69,7 +70,7 @@ git push origin master --tags  # 推送代码和标签到 GitHub
 - `@opencode-ai/plugin` is a **peerDependency** (`>=1.4.3 <2`) — don't add it to dependencies.
 - OpenCode owns the rolling checkpoint and retained tail; do not add plugin checkpoint persistence or per-message IDs.
 - Do not add normal chat/system message injection, compression markers, block graphs, anchors, or placeholders.
-- The `dcp_prune` tool and heuristic auto-prune are the only LLM-facing compression surfaces. Auto-prune fires only at turn boundaries (`session.idle`), never mid-turn; both must go through the `PruneService` (busy-gating + deferral), which delegates to the `SummarizeCoordinator` single-flight/cooldown path. Never call `client.session.summarize` (or `SummarizeCoordinator`) directly from a trigger surface: on hosts whose summarize endpoint mutates the session while busy, that injects a compaction part that hijacks the running turn.
+- The `dcp_prune` tool and heuristic auto-prune are the only LLM-facing compression surfaces. Auto-prune fires only at confirmed at-rest boundaries (quiet window + live probe classification), never mid-turn and never on the raw `session.idle` instant; both must go through the `PruneService` (busy-gating + deferral), which delegates to the `SummarizeCoordinator` single-flight/cooldown path. Never call `client.session.summarize` (or `SummarizeCoordinator`) directly from a trigger surface: on hosts whose summarize endpoint mutates the session while busy, that injects a compaction part that hijacks the running turn.
 - Compaction prompt failures are fail-open: native OpenCode compaction must continue with its default prompt.
 
 <!-- specgit:block:start -->
@@ -95,6 +96,16 @@ git push origin master --tags  # 推送代码和标签到 GitHub
   `glab mr update <number> --ready`。
 - 用 `specgit finish` 收尾：裁决来自真实的 git、PR 与 CI 证据。退出码
   0 是唯一的"完成"。
+
+### 议题标签
+
+- 每次引导都会自动应用标题的 `kind::<type>` 成员；显式传入
+  `--tags <a,b>` 可自选完整集合。
+- 选择以池为先：仓库中符合语法的既有标签原样胜出；缺失的名称从内置的
+  `kind::` 目录或策略的 `tags:` 声明中播种。未知词汇以退出码 2 指名
+  全集。
+- 克制选择：每轴至多一个标签，拿不准就不选——池外标签会被报告
+  （`tag_pool_dirty` 警告是给人看的），SpecGit 绝不重命名它们。
 
 ### 修复与诊断
 

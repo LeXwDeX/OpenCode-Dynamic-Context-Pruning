@@ -77,6 +77,29 @@
                     "default": true,
                     "description": "Heuristically trigger native compaction between turns on topic drift, message volume or long idle gaps"
                 },
+                "signals": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "topicDrift": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Prune when consecutive user messages signal a real topic change (the only default-on signal)"
+                        },
+                        "volume": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Prune when user messages since the last prune reach volumeThreshold (default off)"
+                        },
+                        "idleGap": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Prune when the session resumes after idleGapMs of inactivity (default off)"
+                        }
+                    },
+                    "default": { "topicDrift": true, "volume": false, "idleGap": false },
+                    "description": "Per-signal switches; only topic changes are enabled by default"
+                },
                 "minMessages": {
                     "type": "number",
                     "minimum": 1,
@@ -111,6 +134,7 @@
             },
             "default": {
                 "enabled": true,
+                "signals": { "topicDrift": true, "volume": false, "idleGap": false },
                 "minMessages": 8,
                 "volumeThreshold": 30,
                 "driftThreshold": 0.18,

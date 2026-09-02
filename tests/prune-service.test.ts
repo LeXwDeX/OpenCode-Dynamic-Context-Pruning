@@ -1,6 +1,5 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { SessionActivityTracker } from "../lib/activity"
 import { PruneService } from "../lib/prune-service"
 import { Logger } from "../lib/logger"
 import { SummarizeCoordinator } from "../lib/summarize"
@@ -9,13 +8,14 @@ import { MODEL_MESSAGES, drainUntil, fakeOpenCodeClient, flushMicrotasks } from 
 
 interface Harness {
     service: PruneService
-    tracker: SessionActivityTracker
     summarizeCalls: Array<{ sessionID: string; model: unknown }>
     nativeCalls: unknown[]
     client: any
     coordinator: SummarizeCoordinator
-    now: () => number
     setNow: (at: number) => void
+    /** Fire the armed quiet-window timers, driving pending windows to the
+     * expiry probe and (when it says not busy) the at-rest classification. */
+    reachBoundary: () => Promise<void>
 }
 
 function fakeLogger() {
@@ -41,6 +41,8 @@ function build(
 ): Harness {
     let clock = 0
     const now = () => clock
+    let handle = 0
+    const timers = new Map<number, () => void>()
     const summarizeCalls: Array<{ sessionID: string; model: unknown }> = []
     const { client, nativeCalls } = fakeOpenCodeClient(options)
     const logger = options.logger ?? new Logger(false)
@@ -49,7 +51,6 @@ function build(
         failureCooldownMs: 30_000,
         now,
     })
-    const tracker = new SessionActivityTracker(now)
     const summarize = options.summarize
         ? ({
               summarize: async (request: SummarizeRequest) => {
@@ -71,20 +72,37 @@ function build(
     const service = new PruneService({
         client,
         summarize,
-        activity: tracker,
         logger,
+        now,
+        setTimer: (fn: () => void, ms: number) => {
+            handle += 1
+            timers.set(handle, fn)
+            return handle
+        },
+        clearTimer: (t: unknown) => {
+            timers.delete(t as number)
+        },
+        probeTimeoutMs: 50,
     })
+
+    const fireTimers = () => {
+        const fns = [...timers.values()]
+        timers.clear()
+        for (const fn of fns) fn()
+    }
 
     return {
         service,
-        tracker,
         summarizeCalls,
         nativeCalls,
         client,
         coordinator,
-        now,
-        setNow: (at: number) => {
+        setNow: (at) => {
             clock = at
+        },
+        reachBoundary: async () => {
+            fireTimers()
+            await flushMicrotasks(50)
         },
     }
 }
@@ -97,14 +115,22 @@ async function drain(h: Harness, expectedCalls: number): Promise<void> {
     await drainUntil(() => h.nativeCalls.length >= expectedCalls)
 }
 
-test("defer queues the prune on an unknown-state session and fires at the idle boundary", async () => {
+/** Queue a deferred prune, deliver an idle observation, and drive the quiet
+ * window through expiry so the drain runs at the at-rest classification. */
+async function deferAndReachAtRest(h: Harness, sessionID: string): Promise<void> {
+    await h.service.request({ sessionID, onBusy: "defer" })
+    h.service.observeEvent("session.idle", { sessionID })
+    await h.reachBoundary()
+}
+
+test("defer queues the prune on an unknown-state session and fires at the at-rest boundary", async () => {
     const h = build()
 
     const outcome = await h.service.request({ sessionID: "ses_a", onBusy: "defer" })
     assert.deepEqual(outcome, { status: "deferred" })
     assert.equal(h.nativeCalls.length, 0)
 
-    h.service.observeEvent("session.idle", { sessionID: "ses_a" })
+    await deferAndReachAtRest(h, "ses_a")
     await drain(h, 1)
 
     assert.equal(h.nativeCalls.length, 1)
@@ -134,7 +160,9 @@ test("defer always queues, even when idle was just observed", async () => {
     assert.deepEqual(outcome, { status: "deferred" })
     assert.equal(h.nativeCalls.length, 0)
 
+    // A second idle leg is deduped; the armed window still expires to at-rest.
     h.service.observeEvent("session.idle", { sessionID: "ses_c" })
+    await h.reachBoundary()
     await drain(h, 1)
     assert.equal(h.nativeCalls.length, 1)
 })
@@ -165,7 +193,8 @@ test("session.compacted cancels a queued prune instead of compacting twice", asy
 
     h.service.observeEvent("session.compacted", { sessionID: "ses_f" })
     h.service.observeEvent("session.idle", { sessionID: "ses_f" })
-    await drain(h, 1)
+    await h.reachBoundary()
+    await flushMicrotasks()
 
     assert.equal(h.nativeCalls.length, 0)
 })
@@ -236,7 +265,7 @@ test("concurrent requests merge into one native summarize call", async () => {
     assert.equal(h.nativeCalls.length, 1)
 })
 
-test("queued prune merges with an auto prune firing on the same idle event", async () => {
+test("queued prune merges with a direct auto prune firing on the same at-rest boundary", async () => {
     const h = build()
     let release!: (value: unknown) => void
     const gate = new Promise((resolve) => {
@@ -247,10 +276,11 @@ test("queued prune merges with an auto prune firing on the same idle event", asy
         return gate
     }
     await h.service.request({ sessionID: "ses_k", onBusy: "defer" })
-
     h.service.observeEvent("session.idle", { sessionID: "ses_k" })
+
     const direct = h.service.request({ sessionID: "ses_k", onBusy: "proceed" })
     await drain(h, 1)
+    await h.reachBoundary()
     release({ data: true })
     const directOutcome = await direct
 
@@ -264,10 +294,10 @@ test("stale busy evidence decays to unknown after the TTL", async () => {
         sessionID: "ses_l",
         status: { type: "busy" },
     })
-    assert.equal(h.tracker.state("ses_l"), "busy")
+    assert.equal(h.service.boundary.state("ses_l"), "busy")
 
     h.setNow(11 * 60_000)
-    assert.equal(h.tracker.state("ses_l"), "unknown")
+    assert.equal(h.service.boundary.state("ses_l"), "unknown")
 
     const outcome = await h.service.request({ sessionID: "ses_l", onBusy: "proceed" })
     assert.deepEqual(outcome, { status: "succeeded" })
@@ -324,8 +354,10 @@ test("defer re-queues when the server reports busy despite observed idle", async
     assert.deepEqual(outcome, { status: "deferred" })
     assert.equal(h.nativeCalls.length, 0)
 
+    // The window expires but the expiry probe sees busy: relay idle, no fire.
     h.client.session.status = async () => ({ data: {} })
     h.service.observeEvent("session.idle", { sessionID: "ses_probe_defer" })
+    await h.reachBoundary()
     await drain(h, 1)
     assert.equal(h.nativeCalls.length, 1)
 })
@@ -339,6 +371,15 @@ test("fails open when the host does not expose a status endpoint", async () => {
     assert.equal(h.nativeCalls.length, 1)
 })
 
+test("an at-rest drain on a status-less host still fires (T3 fail-open boundary)", async () => {
+    const h = build()
+    delete h.client.session.status
+
+    await deferAndReachAtRest(h, "ses_t3")
+    await drain(h, 1)
+    assert.equal(h.nativeCalls.length, 1, "the probe failing open still classifies at-rest")
+})
+
 test("a busy rejection from the host maps to the busy outcome, not failed", async () => {
     const h = build({ native: async () => ({ error: "Session is busy" }) })
     h.service.observeEvent("session.idle", { sessionID: "ses_409" })
@@ -347,19 +388,44 @@ test("a busy rejection from the host maps to the busy outcome, not failed", asyn
     assert.deepEqual(outcome, { status: "busy" })
 })
 
-test("a queued prune that loses the busy race re-queues for the next idle", async () => {
+test("a queued prune that loses the busy race re-queues for the next at-rest", async () => {
     const h = build()
     await h.service.request({ sessionID: "ses_rq", onBusy: "defer" })
 
     h.client.session.status = async () => ({ data: { ses_rq: { type: "busy" } } })
     h.service.observeEvent("session.idle", { sessionID: "ses_rq" })
+    await h.reachBoundary()
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 0, "drain stood down without calling the native endpoint")
 
     h.client.session.status = async () => ({ data: {} })
     h.service.observeEvent("session.idle", { sessionID: "ses_rq" })
+    await h.reachBoundary()
     await drain(h, 1)
-    assert.equal(h.nativeCalls.length, 1, "the re-queued prune executed at the next idle")
+    assert.equal(h.nativeCalls.length, 1, "the re-queued prune executed at the next at-rest")
+})
+
+test("a relay idle during the quiet window cancels the drain entirely", async () => {
+    const h = build()
+    await h.service.request({ sessionID: "ses_relay", onBusy: "defer" })
+
+    h.service.observeEvent("session.idle", { sessionID: "ses_relay" })
+    h.service.observeEvent("session.status", {
+        sessionID: "ses_relay",
+        status: { type: "busy" },
+    })
+    await h.reachBoundary()
+    await flushMicrotasks()
+
+    assert.equal(h.nativeCalls.length, 0, "a cancelled window must not drain")
+    // The deferred prune survives and drains at the next real at-rest.
+    h.service.observeEvent("session.status", {
+        sessionID: "ses_relay",
+        status: { type: "idle" },
+    })
+    await h.reachBoundary()
+    await drain(h, 1)
+    assert.equal(h.nativeCalls.length, 1)
 })
 
 test("events without a sessionID never touch the queue", async () => {
@@ -379,22 +445,36 @@ test("session.deleted with the SDK info shape cancels the queue and drops tracke
         sessionID: "ses_del",
         status: { type: "busy" },
     })
-    assert.equal(h.tracker.state("ses_del"), "busy")
+    assert.equal(h.service.boundary.state("ses_del"), "busy")
 
     h.service.observeEvent("session.deleted", { info: { id: "ses_del" } })
-    assert.equal(h.tracker.state("ses_del"), "unknown", "dropSession must run for the info shape")
+    assert.equal(
+        h.service.boundary.state("ses_del"),
+        "unknown",
+        "state must drop for the info shape",
+    )
 
     h.service.observeEvent("session.idle", { sessionID: "ses_del" })
+    await h.reachBoundary()
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 0, "the cancelled queued prune must not execute")
+})
+
+test("session.deleted mid-window cancels the pending boundary (never fire after deleted)", async () => {
+    const h = build()
+    await h.service.request({ sessionID: "ses_del_win", onBusy: "defer" })
+    h.service.observeEvent("session.idle", { sessionID: "ses_del_win" })
+    h.service.observeEvent("session.deleted", { sessionID: "ses_del_win" })
+    await h.reachBoundary()
+    await flushMicrotasks()
+
+    assert.equal(h.nativeCalls.length, 0)
 })
 
 test("a failed drain outcome is observable and never re-queued", async () => {
     const log = fakeLogger()
     const h = build({ native: async () => ({ error: "provider down" }), logger: log.logger })
-    await h.service.request({ sessionID: "ses_drain_fail", onBusy: "defer" })
-
-    h.service.observeEvent("session.idle", { sessionID: "ses_drain_fail" })
+    await deferAndReachAtRest(h, "ses_drain_fail")
     await drain(h, 1)
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 1)
@@ -404,6 +484,7 @@ test("a failed drain outcome is observable and never re-queued", async () => {
     )
 
     h.service.observeEvent("session.idle", { sessionID: "ses_drain_fail" })
+    await h.reachBoundary()
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 1, "a failed terminal outcome is not retried")
 })
@@ -416,9 +497,7 @@ test("a throwing drain is observable and never re-queued", async () => {
             throw new Error("summarize exploded")
         },
     })
-    await h.service.request({ sessionID: "ses_drain_throw", onBusy: "defer" })
-
-    h.service.observeEvent("session.idle", { sessionID: "ses_drain_throw" })
+    await deferAndReachAtRest(h, "ses_drain_throw")
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 0)
     assert.ok(
@@ -427,6 +506,22 @@ test("a throwing drain is observable and never re-queued", async () => {
     )
 
     h.service.observeEvent("session.idle", { sessionID: "ses_drain_throw" })
+    await h.reachBoundary()
     await flushMicrotasks()
     assert.equal(h.nativeCalls.length, 0, "a throwing drain is not retried")
+})
+
+test("a never-returning probe releases the boundary within the timeout (R2/I5)", async () => {
+    const h = build()
+    h.client.session.status = () => new Promise(() => {})
+    await h.service.request({ sessionID: "ses_hang", onBusy: "defer" })
+    h.service.observeEvent("session.idle", { sessionID: "ses_hang" })
+
+    // Drive the window expiry; the expiry probe hangs and must be cut short by
+    // the 50ms injected deadline, fail open to at-rest, and drain.
+    await h.reachBoundary()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    await drainUntil(() => h.nativeCalls.length > 0)
+
+    assert.equal(h.nativeCalls.length, 1, "the hung probe must fail open to at-rest and drain")
 })

@@ -23,11 +23,11 @@ DCP 在 `experimental.session.compacting` 阶段提供专用提示词，把检�
 ## 触发压缩
 
 - **OpenCode 自动 compaction**：达到宿主阈值时自动运行。
-- **模型调用 `dcp_prune` 工具**：插件注册的 LLM 工具，描述内置启发式规则——话题明显变更、任务收尾、上下文明显变长时立即调用。
-- **插件启发式自动触发**（`autoPrune`）：监听用户消息流，在回合边界（`session.idle`）触发原生压缩：
-    - 话题变更：新消息与近期消息的词面相似度骤降（CJK 二元组 + Jaccard）；
-    - 消息量达到阈值；
-    - 长时间中断后恢复。
+- **模型调用 `dcp_prune` 工具**：插件注册的 LLM 工具，描述内置启发式规则——仅在话题明显变更或用户明确要求时调用；压缩排队到下一个确认的静息边界执行。
+- **插件启发式自动触发**（`autoPrune`）：监听用户消息流，在**确认的静息边界**（idle 观察后 2 秒静默窗口 + 宿主实时状态探针双重确认，宿主自动化接力会在窗口内取消边界）触发原生压缩。默认只启用话题变更信号：
+    - 话题变更（默认启用）：新消息与近期消息的词面相似度骤降（CJK 二元组 + Jaccard）；
+    - 消息量达到阈值（默认关闭，`autoPrune.signals.volume` 开启）；
+    - 长时间中断后恢复（默认关闭，`autoPrune.signals.idleGap` 开启）。
       自动触发带冷却期；OpenCode 原生 `/compact` 或宿主压缩也会重置计数。
 - **OpenCode 原生 `/compact`**：手动触发同一条 compaction 路径。
 - **`/dcp summarize`**：手动调用原生 `session.summarize()`。
@@ -71,6 +71,11 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
     },
     "autoPrune": {
         "enabled": true,
+        "signals": {
+            "topicDrift": true,
+            "volume": false,
+            "idleGap": false,
+        },
         "minMessages": 8,
         "volumeThreshold": 30,
         "driftThreshold": 0.18,
@@ -80,16 +85,19 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
 }
 ```
 
-| 键                          | 说明                                                                      |
-| --------------------------- | ------------------------------------------------------------------------- |
-| `language`                  | 内置压缩提示词语言：`zh`（默认）/ `en`；自定义覆盖文件优先于该配置        |
-| `tool.enabled`              | 注册模型可调用的 `dcp_prune` 工具（描述含"话题变更立即使用"的启发式指令） |
-| `autoPrune.enabled`         | 启用插件侧启发式自动压缩                                                  |
-| `autoPrune.minMessages`     | 会话用户消息数达到该值前不做任何自动判定                                  |
-| `autoPrune.volumeThreshold` | 距上次压缩的用户消息量阈值                                                |
-| `autoPrune.driftThreshold`  | Jaccard 相似度低于该值视为话题变更（0–1）                                 |
-| `autoPrune.idleGapMs`       | 用户消息间隔超过该值视为长时间中断后恢复                                  |
-| `autoPrune.cooldownMs`      | 同一会话两次自动压缩的最小间隔                                            |
+| 键                             | 说明                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `language`                     | 内置压缩提示词语言：`zh`（默认）/ `en`；自定义覆盖文件优先于该配置          |
+| `tool.enabled`                 | 注册模型可调用的 `dcp_prune` 工具（描述仅授权话题变更或用户明确要求时调用） |
+| `autoPrune.enabled`            | 启用插件侧启发式自动压缩                                                    |
+| `autoPrune.signals.topicDrift` | 话题变更信号开关（默认 `true`，唯一默认启用的信号）                         |
+| `autoPrune.signals.volume`     | 消息量信号开关（默认 `false`；旧版本默认开启，升级后需显式重新开启）        |
+| `autoPrune.signals.idleGap`    | 长时间中断信号开关（默认 `false`；旧版本默认开启，升级后需显式重新开启）    |
+| `autoPrune.minMessages`        | 会话用户消息数达到该值前不做任何自动判定                                    |
+| `autoPrune.volumeThreshold`    | 距上次压缩的用户消息量阈值                                                  |
+| `autoPrune.driftThreshold`     | Jaccard 相似度低于该值视为话题变更（0–1）                                   |
+| `autoPrune.idleGapMs`          | 用户消息间隔超过该值视为长时间中断后恢复                                    |
+| `autoPrune.cooldownMs`         | 同一会话两次自动压缩的最小间隔                                              |
 
 启用 `experimental.customPrompts` 后，可将生成的
 `~/.config/opencode/dcp-prompts/defaults/compaction.md` 复制到以下任一覆盖位置：

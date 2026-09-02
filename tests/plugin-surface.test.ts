@@ -42,7 +42,7 @@ test("plugin registers the heuristic chat.message observer by default", async ()
     assert.equal(typeof hooks["chat.message"], "function")
 })
 
-test("plugin registers the event handler for idle-triggered auto prune", async () => {
+test("plugin registers the event handler for the boundary classifier (status/idle in, at-rest out)", async () => {
     const hooks = await loadPlugin()
     assert.equal(typeof hooks.event, "function")
 })
@@ -143,6 +143,38 @@ test("language accepts only zh or en", async () => {
     assert.deepEqual(validateConfigTypes({ language: "en" }), [])
     assert.equal(validateConfigTypes({ language: "fr" }).length, 1)
     assert.deepEqual(getInvalidConfigKeys({ language: "zh" }), [])
+})
+
+test("autoPrune.signals keys are validated and default to topic-drift only", async () => {
+    const { DEFAULT_AUTO_PRUNE, VALID_CONFIG_KEYS, validateConfigTypes } =
+        await import("../lib/config")
+    assert.deepEqual(DEFAULT_AUTO_PRUNE.signals, {
+        topicDrift: true,
+        volume: false,
+        idleGap: false,
+    })
+    for (const key of [
+        "autoPrune.signals",
+        "autoPrune.signals.topicDrift",
+        "autoPrune.signals.volume",
+        "autoPrune.signals.idleGap",
+    ]) {
+        assert.equal(VALID_CONFIG_KEYS.has(key), true, `${key} must be a valid config key`)
+    }
+    assert.deepEqual(validateConfigTypes({ autoPrune: { signals: { volume: true } } }), [])
+    const errors = validateConfigTypes({ autoPrune: { signals: { volume: "yes" } } })
+    assert.deepEqual(
+        errors.map((error) => error.key),
+        ["autoPrune.signals.volume"],
+    )
+})
+
+test("the signals migration hint fires while signals are unset and auto prune is on", async () => {
+    const { needsSignalsMigrationHint } = await import("../lib/config")
+    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: true } }), true)
+    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: true, signals: {} } }), false)
+    assert.equal(needsSignalsMigrationHint({ autoPrune: { enabled: false } }), false)
+    assert.equal(needsSignalsMigrationHint({}), false)
 })
 
 test("language config switches the bundled compaction prompt to English", async () => {

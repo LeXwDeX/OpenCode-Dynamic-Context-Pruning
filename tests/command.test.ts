@@ -1,6 +1,5 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { SessionActivityTracker } from "../lib/activity"
 import { createCommandExecuteHandler } from "../lib/hooks"
 import { Logger } from "../lib/logger"
 import { PruneService } from "../lib/prune-service"
@@ -29,11 +28,9 @@ function build(messages: unknown[] = MODEL_MESSAGES): Ctx {
             return { status: "succeeded" as const }
         },
     } as any
-    const activity = new SessionActivityTracker()
     const service = new PruneService({
         client,
         summarize,
-        activity,
         logger: new Logger(false),
     })
     return {
@@ -42,7 +39,7 @@ function build(messages: unknown[] = MODEL_MESSAGES): Ctx {
         service,
         calls,
         markBusy: (id) =>
-            activity.observe("session.status", { sessionID: id, status: { type: "busy" } }),
+            service.observeEvent("session.status", { sessionID: id, status: { type: "busy" } }),
     }
 }
 
