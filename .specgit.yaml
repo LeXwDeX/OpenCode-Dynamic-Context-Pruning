@@ -1,8 +1,8 @@
 version: 1
-delivery: 26-error-run-merge
+delivery: 27-offtopic-d-digest
 context:
   kind: branch
-  branch: feat/26-26-error-run-merge
+  branch: feat/27-27-offtopic-d-digest
 issues:
-  - 26
-pr: 31
+  - 27
+pr: 32
