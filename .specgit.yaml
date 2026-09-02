@@ -1,8 +1,8 @@
 version: 1
-delivery: 25-artifact-run-merge
+delivery: 26-error-run-merge
 context:
   kind: branch
-  branch: feat/25-25-artifact-run-merge
+  branch: feat/26-26-error-run-merge
 issues:
-  - 25
-pr: 30
+  - 26
+pr: 31
