@@ -1,11 +1,10 @@
 version: 1
-delivery: fold-dedup
+delivery: fold-band-skip
 context:
   kind: branch
-  branch: feat/17-fold-dedup
+  branch: fix/19-fold-band-skip
 issues:
-  - 17
+  - 19
 issueKinds:
-  - issue: 17
-    kind: kind::feat
-pr: 18
+  - issue: 19
+    kind: kind::fix
