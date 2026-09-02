@@ -1,11 +1,10 @@
 version: 1
-delivery: redesign-trigger-gating
+delivery: compaction-transparency
 context:
   kind: branch
-  branch: refactor/11-redesign-trigger-gating
+  branch: fix/13-compaction-transparency
 issues:
-  - 11
+  - 13
 issueKinds:
-  - issue: 11
-    kind: kind::refactor
-pr: 12
+  - issue: 13
+    kind: kind::fix
