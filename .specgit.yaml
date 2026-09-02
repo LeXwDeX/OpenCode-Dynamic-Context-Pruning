@@ -1,11 +1,7 @@
 version: 1
-delivery: fork-session-correlation
+delivery: 24-merge-foundation
 context:
   kind: branch
-  branch: fix/21-fork-session-correlation
+  branch: feat/24-merge-foundation
 issues:
-  - 21
-issueKinds:
-  - issue: 21
-    kind: kind::fix
-pr: 22
+  - 24
