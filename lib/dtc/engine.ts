@@ -1,6 +1,12 @@
 import type { Logger } from "../logger"
 import { firstLine, truncateMiddle } from "../text"
-import { digestKey, digestTurn, estimateSlice, findTopicBoundaries } from "./digest"
+import {
+    digestKey,
+    digestTurn,
+    estimateSlice,
+    findTopicBoundaries,
+    offTopicMiddleTurns,
+} from "./digest"
 import {
     exciseItems,
     extractTarget,
@@ -26,6 +32,9 @@ import type { MessageLike, PartLike, Turn } from "./types"
  *   excised, a message is never emptied, and the C/T zones are exempt
  * - distant tool outputs are folded with the host's own `time.compacted`
  *   marker, so the wire rendering is the host's native one
+ * - middle-zone turns topically discontinuous with the current-task zone
+ *   (#27) deepen to the distant digest treatment, detected mechanically with
+ *   the same Jaccard drift threshold and layered under the merge excision
  *
  * Nothing here writes to the session; the host rebuilds this array from
  * storage on every request, so all mutations are inherently request-scoped.
@@ -89,6 +98,8 @@ export interface TransformStats {
     reducedInputs: number
     foldedErrors: number
     digestedTurns: number
+    /** Topic axis (#27): M-zone turns deepened to the distant digest treatment. */
+    offTopicTurns: number
     /** Validity axis (#25/#26): runs merged into one surviving call. */
     mergedRuns: number
     /** Whole tool parts actually removed (never-empty adjustments included). */
@@ -108,6 +119,7 @@ const NO_STATS: TransformStats = {
     reducedInputs: 0,
     foldedErrors: 0,
     digestedTurns: 0,
+    offTopicTurns: 0,
     mergedRuns: 0,
     excisedParts: 0,
     skipped: undefined,
@@ -179,6 +191,20 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const zones = computeZones(messages, headTurns, sessionID, state, config)
     const now = (deps.now ?? Date.now)()
 
+    // Topic axis (#27): middle-zone turns topically discontinuous with the
+    // current-task zone deepen to the distant digest treatment. Planned
+    // pre-excision and outside the merge gate — the topic axis does not
+    // depend on the validity axis. Failure skips only the deepening; the
+    // middle zone folds classically.
+    let offTopicDigests: Map<number, string> | undefined
+    try {
+        offTopicDigests = planOffTopicDeepening(messages, headTurns, zones, deps)
+    } catch (error) {
+        deps.logger?.warn("DTC off-topic scan failed; middle zone folds classically", {
+            error: String(error),
+        })
+    }
+
     // Validity axis (#25/#26): artifact and error runs in the D/M zones
     // merge BEFORE any folding, so band 1 digests and the escalation estimate
     // both see the excised shape. Failure skips only the merge — folding
@@ -208,7 +234,17 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     const applyUpTo = (lvl: FoldLevel): void => {
         while (appliedBand < lvl) {
             appliedBand++
-            applyBand(messages, headTurns, zones, appliedBand, deps, stats, now, mergeDigests)
+            applyBand(
+                messages,
+                headTurns,
+                zones,
+                appliedBand,
+                deps,
+                stats,
+                now,
+                mergeDigests,
+                offTopicDigests,
+            )
         }
     }
     applyUpTo(level)
@@ -238,6 +274,7 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
         reducedInputs: stats.reducedInputs,
         foldedErrors: stats.foldedErrors,
         digestedTurns: stats.digestedTurns,
+        offTopicTurns: stats.offTopicTurns,
         mergedRuns: stats.mergedRuns,
         excisedParts: stats.excisedParts,
     })
@@ -283,6 +320,41 @@ function computeZones(
     return { mStart, cStart }
 }
 
+/**
+ * Topic-axis deepening (#27): plans the distant digest treatment for M-zone
+ * turns whose user text drifts from the C-zone reference. Digests are
+ * precomputed on the pre-excision array — counts stay faithful (`edit×3`)
+ * and keys match the shape the host rebuilds on every request — mirroring
+ * the D-zone loop exactly, so a turn deepened in M and later sliding into D
+ * is a pure cache hit with an identical digest.
+ */
+function planOffTopicDeepening(
+    messages: MessageLike[],
+    headTurns: Turn[],
+    zones: Zones,
+    deps: TransformDeps,
+): Map<number, string> {
+    const digests = new Map<number, string>()
+    const offTopic = offTopicMiddleTurns(
+        messages,
+        headTurns,
+        zones.mStart,
+        zones.cStart,
+        deps.config.driftThreshold,
+    )
+    for (const t of offTopic) {
+        const turn = headTurns[t]!
+        const key = digestKey(messages, turn)
+        let digest = deps.state.cachedDigest(key)
+        if (digest === undefined) {
+            digest = digestTurn(messages, turn, t + 1)
+            deps.state.storeDigest(key, digest)
+        }
+        digests.set(t, digest)
+    }
+    return digests
+}
+
 function applyBand(
     messages: MessageLike[],
     headTurns: Turn[],
@@ -292,6 +364,7 @@ function applyBand(
     stats: TransformStats,
     now: number,
     mergeDigests?: Map<number, string>,
+    offTopicDigests?: Map<number, string>,
 ): void {
     if (band === 1) {
         for (let t = 0; t < zones.mStart; t++) {
@@ -299,7 +372,15 @@ function applyBand(
         }
     } else if (band === 2) {
         for (let t = zones.mStart; t < zones.cStart; t++) {
-            foldMiddle(messages, headTurns[t]!, stats, now)
+            const precomputed = offTopicDigests?.get(t)
+            if (precomputed !== undefined) {
+                // #27: off-topic with the current-task zone — full distant
+                // treatment with the pre-excision digest, folded exactly once.
+                foldDistant(messages, headTurns[t]!, t + 1, deps, stats, now, precomputed)
+                stats.offTopicTurns++
+            } else {
+                foldMiddle(messages, headTurns[t]!, stats, now)
+            }
         }
     } else if (band === 3) {
         for (let t = zones.cStart; t < headTurns.length; t++) {

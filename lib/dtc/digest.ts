@@ -130,6 +130,38 @@ export function findTopicBoundaries(
     return boundaries
 }
 
+/**
+ * #27 off-topic scanner: head turns in `[mStart, cStart)` whose substantial
+ * user text drifts from the current-task zone. The reference is the token
+ * union of all substantial user texts in `[cStart, turns.length)` — the C
+ * zone is one task, so the union is sturdier than any single turn. Same
+ * mechanical vocabulary as `findTopicBoundaries` (tokens ≥ 6, Jaccard), but
+ * drift is measured against the fixed C reference instead of the predecessor:
+ * short texts ("继续") are never members, and an empty reference returns [].
+ */
+export function offTopicMiddleTurns(
+    messages: MessageLike[],
+    turns: Turn[],
+    mStart: number,
+    cStart: number,
+    driftThreshold: number,
+): number[] {
+    const reference = new Set<string>()
+    for (let t = cStart; t < turns.length; t++) {
+        const tokens = tokenize(userText(messages[turns[t]!.start]))
+        if (tokens.size < 6) continue
+        for (const token of tokens) reference.add(token)
+    }
+    if (reference.size === 0) return []
+    const members: number[] = []
+    for (let t = mStart; t < cStart; t++) {
+        const tokens = tokenize(userText(messages[turns[t]!.start]))
+        if (tokens.size < 6) continue
+        if (jaccard(tokens, reference) < driftThreshold) members.push(t)
+    }
+    return members
+}
+
 /** Token estimate of a message slice, summing every string payload. Parts
  * folded with the host's compacted marker count as the short placeholder the
  * host serializer will actually emit, not the stored output. */
