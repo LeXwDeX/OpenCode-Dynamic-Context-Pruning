@@ -1,11 +1,10 @@
 version: 1
-delivery: native-compaction-restore
+delivery: fold-dedup
 context:
   kind: branch
-  branch: fix/15-native-compaction-restore
+  branch: feat/17-fold-dedup
 issues:
-  - 15
+  - 17
 issueKinds:
-  - issue: 15
-    kind: kind::fix
-pr: 16
+  - issue: 17
+    kind: kind::feat
