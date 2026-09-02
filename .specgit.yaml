@@ -1,8 +1,7 @@
 version: 1
-delivery: 27-offtopic-d-digest
+delivery: 28-duplicate-dedup
 context:
   kind: branch
-  branch: feat/27-27-offtopic-d-digest
+  branch: feat/28-28-duplicate-dedup
 issues:
-  - 27
-pr: 32
+  - 28
