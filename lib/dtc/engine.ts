@@ -118,7 +118,7 @@ export function transformMessages(messages: MessageLike[], deps: TransformDeps):
     if (!Array.isArray(messages) || messages.length === 0) return stats
     stats.messages = messages.length
 
-    const sessionID = findSessionID(messages)
+    const sessionID = findSessionID(messages, deps.state)
     if (sessionID && deps.state.consumeCompactionSkip(sessionID)) {
         stats.skipped = "compaction"
         return stats
@@ -434,10 +434,25 @@ function foldErrorPart(
     }
 }
 
-function findSessionID(messages: MessageLike[]): string | undefined {
+function findSessionID(messages: MessageLike[], state: DtcState): string | undefined {
     for (const message of messages) {
         const id = message?.info?.sessionID
         if (typeof id === "string" && id) return id
+    }
+    // Fork-shape fallback: the host stripped id/sessionID from the payload,
+    // so correlate through the chat.params index instead — scan user turns
+    // newest-first and return the session recorded for that message's
+    // creation time. Request N's chat.params records the user message that
+    // triggered it, so from request N+1 on the session always resolves;
+    // the very first request of a session finds nothing and fails open.
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (message?.info?.role !== "user") continue
+        if ((message.parts ?? []).some((p) => p?.type === "compaction")) continue
+        const created = message.info?.time?.created
+        if (typeof created !== "number") continue
+        const sessionID = state.sessionByUserTime(created)
+        if (sessionID) return sessionID
     }
     return undefined
 }

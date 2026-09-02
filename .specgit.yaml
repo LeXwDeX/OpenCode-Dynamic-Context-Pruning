@@ -1,11 +1,11 @@
 version: 1
-delivery: fold-band-skip
+delivery: fork-session-correlation
 context:
   kind: branch
-  branch: fix/19-fold-band-skip
+  branch: fix/21-fork-session-correlation
 issues:
-  - 19
+  - 21
 issueKinds:
-  - issue: 19
+  - issue: 21
     kind: kind::fix
-pr: 20
+pr: 22

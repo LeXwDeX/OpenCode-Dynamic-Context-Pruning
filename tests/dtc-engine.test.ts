@@ -13,6 +13,7 @@ import {
     reasoningPart,
     userMessage,
     assistantMessage,
+    toForkShape,
 } from "./fixtures"
 
 function harness(options: { contextTokens?: number; config?: Partial<typeof DTC_DEFAULTS> } = {}) {
@@ -403,4 +404,29 @@ test("user messages without text still digest safely", () => {
     messages[0]!.parts = [{ type: "file" as any, id: "p_file" } as any]
     const h = harness({ contextTokens: 100 })
     assert.doesNotThrow(() => h.run(messages))
+})
+
+test("fork-shape payloads without sessionID fold via chat.params correlation", () => {
+    // 30 turns → head 26 → D = [0,6), M = [6,18); tiny window forces the full
+    // escalation, so a resolved session must digest the distant zone.
+    const messages = toForkShape(buildTurns(30, { toolOutputChars: 200, textChars: 100 }))
+    const h = harness({ contextTokens: 1_000 })
+    // The host fired chat.params on the previous request with the turn-29
+    // user message (created 29000); the newest user turn (30000) has no
+    // record yet, so resolution must scan back and hit 29000.
+    h.state.recordParamsSession("ses_test", 29 * 1000)
+    const stats = h.run(messages)
+    assert.notEqual(stats.skipped, "unknown-context")
+    assert.equal(stats.level, 3)
+    assert.ok(stats.digestedTurns >= 6, "distant zone digests under fork-shape payloads")
+    assert.ok(stats.foldedTools > 0)
+})
+
+test("fork-shape first request (nothing correlated yet) fails open untouched", () => {
+    const messages = toForkShape(buildTurns(30, { toolOutputChars: 200, textChars: 100 }))
+    const before = deepCloneMessages(messages)
+    const h = harness({ contextTokens: 1_000 })
+    const stats = h.run(messages)
+    assert.equal(stats.skipped, "unknown-context")
+    assert.deepEqual(messages, before)
 })

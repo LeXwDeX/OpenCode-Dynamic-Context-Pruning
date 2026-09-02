@@ -6,6 +6,7 @@
 
 const SESSION_LIMIT = 500
 const DIGEST_LIMIT = 2000
+const PARAMS_INDEX_LIMIT = 200
 
 function lruSet<K, V>(map: Map<K, V>, key: K, value: V, limit: number): void {
     if (map.has(key)) map.delete(key)
@@ -40,6 +41,8 @@ interface SessionDtcState {
 export class DtcState {
     private readonly sessions = new Map<string, SessionDtcState>()
     private readonly digests = new Map<string, string>()
+    /** User-message creation time → sessionID, fed by `chat.params`. */
+    private readonly paramsIndex = new Map<number, string>()
 
     observeContextLimit(sessionID: string, contextTokens: number | undefined): void {
         if (!sessionID || !contextTokens || !Number.isFinite(contextTokens) || contextTokens <= 0) {
@@ -52,6 +55,25 @@ export class DtcState {
 
     contextTokens(sessionID: string): number | undefined {
         return this.sessions.get(sessionID)?.contextTokens
+    }
+
+    /**
+     * Fork hosts strip id/sessionID out of message payloads (they live in
+     * database columns), so the transform cannot read the session off the
+     * messages like it does on the official host. `chat.params` fires on
+     * every request carrying both the sessionID and the triggering user
+     * message; recording that pair lets the NEXT request's transform resolve
+     * its session by matching user-message creation times. The key is
+     * content (a timestamp), not recency, so concurrent sessions never
+     * cross-attribute.
+     */
+    recordParamsSession(sessionID: string, userTimeCreated: number): void {
+        if (!sessionID || !Number.isFinite(userTimeCreated)) return
+        lruSet(this.paramsIndex, userTimeCreated, sessionID, PARAMS_INDEX_LIMIT)
+    }
+
+    sessionByUserTime(userTimeCreated: number): string | undefined {
+        return this.paramsIndex.get(userTimeCreated)
     }
 
     /** Called by the compacting hook; consumed by the very next transform.
@@ -97,11 +119,18 @@ export class DtcState {
 
     dropSession(sessionID: string): void {
         this.sessions.delete(sessionID)
+        for (const [time, sid] of this.paramsIndex) {
+            if (sid === sessionID) this.paramsIndex.delete(time)
+        }
     }
 
     /** Test/inspection surface. */
-    stats(): { sessions: number; digests: number } {
-        return { sessions: this.sessions.size, digests: this.digests.size }
+    stats(): { sessions: number; digests: number; params: number } {
+        return {
+            sessions: this.sessions.size,
+            digests: this.digests.size,
+            params: this.paramsIndex.size,
+        }
     }
 
     private session(sessionID: string): SessionDtcState {

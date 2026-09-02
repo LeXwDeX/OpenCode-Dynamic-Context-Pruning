@@ -48,13 +48,21 @@ export function createSessionCompactingHandler(deps: SessionCompactingDeps) {
  */
 export function createChatParamsHandler(deps: { state: DtcState; logger: Logger }) {
     return async (
-        input: { sessionID: string; model?: { limit?: { context?: number } } },
+        input: {
+            sessionID: string
+            model?: { limit?: { context?: number } }
+            message?: { time?: { created?: number } }
+        },
         _output?: unknown,
     ): Promise<void> => {
         try {
             const context = input.model?.limit?.context
             if (typeof context === "number" && Number.isFinite(context) && context > 0) {
                 deps.state.observeContextLimit(input.sessionID, context)
+            }
+            const created = input.message?.time?.created
+            if (input.sessionID && typeof created === "number" && Number.isFinite(created)) {
+                deps.state.recordParamsSession(input.sessionID, created)
             }
         } catch (error) {
             deps.logger.debug("chat.params observation failed", {
