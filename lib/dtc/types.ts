@@ -16,6 +16,7 @@ export interface MessageInfoLike {
 export interface ToolStateLike {
     status?: string
     output?: string
+    error?: unknown
     input?: Record<string, unknown>
     time?: { compacted?: number } & Record<string, unknown>
     metadata?: Record<string, unknown>

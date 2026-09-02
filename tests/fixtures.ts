@@ -19,6 +19,7 @@ export function toolPart(options: {
     output?: string
     status?: string
     input?: Record<string, unknown>
+    error?: string
 }): PartLike {
     return {
         type: "tool",
@@ -27,6 +28,7 @@ export function toolPart(options: {
         state: {
             status: options.status ?? "completed",
             output: options.output ?? "",
+            ...(options.error !== undefined ? { error: options.error } : {}),
             input: options.input ?? { command: "echo hi" },
             time: {},
         },
