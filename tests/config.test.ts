@@ -74,6 +74,61 @@ test("configuration layers merge supported fields while retired strategies stay 
     assert.equal("commands" in config, false)
 })
 
+test("a child .opencode directory without DCP settings preserves parent configuration", (t) => {
+    const { project, ctx, write } = workspace(t)
+    write(join(project, ".opencode"), '{"enabled":false,"dtc":{"protectedTools":["bash"]}}')
+    const child = join(project, "packages", "child")
+    const childConfig = join(child, ".opencode")
+    mkdirSync(childConfig, { recursive: true })
+    ctx.directory = child
+
+    for (const unrelatedContent of [false, true]) {
+        if (unrelatedContent) writeFileSync(join(childConfig, "opencode.json"), "{}")
+        const config = getConfig(ctx)
+        assert.equal(config.enabled, false)
+        assert.deepEqual(config.dtc.protectedTools, ["bash"])
+    }
+})
+
+test("the nearest DCP file replaces ancestor settings and JSONC takes precedence over JSON", (t) => {
+    const { project, ctx, write } = workspace(t)
+    write(
+        join(project, ".opencode"),
+        '{"enabled":false,"debug":true,"dtc":{"protectedTools":["bash"]}}',
+    )
+    const child = join(project, "packages", "child")
+    const childConfig = join(child, ".opencode")
+    mkdirSync(childConfig, { recursive: true })
+    writeFileSync(join(childConfig, "dcp.json"), '{"dtc":{"protectedTools":["grep"]}}')
+    ctx.directory = child
+
+    const json = getConfig(ctx)
+    assert.equal(json.enabled, true)
+    assert.equal(json.debug, false)
+    assert.deepEqual(json.dtc.protectedTools, ["grep"])
+
+    write(childConfig, '{"enabled":false,"dtc":{"protectedTools":["read"]}}')
+    const jsonc = getConfig(ctx)
+    assert.equal(jsonc.enabled, false)
+    assert.equal(jsonc.debug, false)
+    assert.deepEqual(jsonc.dtc.protectedTools, ["read"])
+})
+
+test("malformed nearest JSONC does not fall back to JSON or ancestor settings", (t) => {
+    const { project, ctx, write, notices } = workspace(t)
+    write(join(project, ".opencode"), '{"enabled":false,"debug":true}')
+    const child = join(project, "packages", "child")
+    const childConfig = join(child, ".opencode")
+    write(childConfig, '{"enabled": false, broken}')
+    writeFileSync(join(childConfig, "dcp.json"), '{"enabled":false}')
+    ctx.directory = child
+
+    const config = getConfig(ctx)
+    assert.equal(config.enabled, true)
+    assert.equal(config.debug, false)
+    assert.equal(notices.length, 1)
+})
+
 test("malformed JSONC and non-object roots never partially apply settings", (t) => {
     const { project, ctx, write, notices } = workspace(t)
     for (const content of ['{"enabled": false, broken}', "[]", "false"]) {
