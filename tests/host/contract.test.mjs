@@ -35,10 +35,10 @@ test("host components: filterCompacted checkpoint prefix remains intact", () => 
     hostScenario("post-compaction-prefix")
 })
 
-function publicHostScenario(scenario = "public-host-loop") {
+function publicHostScenario(scenario = "public-host-loop", worker = "public-loop.mjs") {
     const result = spawnSync(
         "bun",
-        [fileURLToPath(new URL("./public-loop.mjs", import.meta.url)), scenario],
+        [fileURLToPath(new URL(`./${worker}`, import.meta.url)), scenario],
         {
             encoding: "utf8",
             timeout: 180_000,
@@ -80,3 +80,21 @@ test("public host HTTP: native automatic compaction settles a slow bash; explici
     assert.equal(metrics[0].completed, metrics[0].tools)
     assert.equal(metrics[1].explicitlyCancelled, true)
 })
+
+test("public host HTTP: hard input rejection recovers or terminates without replaying tools", () => {
+    const { metrics } = publicHostScenario("hard-input-limit", "hard-limit.mjs")
+    assert.equal(metrics.length, 3)
+})
+
+for (const scenario of [
+    "parallel-success",
+    "parallel-mixed",
+    "parallel-pressure",
+    "parallel-cancel",
+]) {
+    test(`public host HTTP: ${scenario} settles each same-turn tool independently`, () => {
+        const { metrics } = publicHostScenario(scenario, "parallel-tools.mjs")
+        assert.ok(metrics.parallelCalls >= 2)
+        if (scenario === "parallel-cancel") assert.equal(metrics.explicitlyCancelled, true)
+    })
+}

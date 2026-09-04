@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL, fileURLToPath } from "node:url"
 import { createServer } from "node:net"
+import { binaryEnvironment, binarySettingsFrom, startBinaryHost } from "./binary-runtime.mjs"
 
 // A separate Bun process runs the complete host HTTP server with its default
 // service graph. All mutations below go through the public session API.
@@ -17,9 +18,11 @@ const settings = {
 assert.ok(settings, `unknown public host scenario: ${scenario}`)
 const automatic = scenario !== "public-host-loop"
 const native = scenario === "native-slow-tool"
+const binarySettings = binarySettingsFrom(process.env)
+assert.ok(!binarySettings || native, "binary matrix uses the slow-tool lifecycle scenario")
 const hostRoot = process.env.DCP_HOST_ROOT
-assert.ok(hostRoot, "run this suite with npm run test:host")
-const scratch = await mkdtemp(join(tmpdir(), "dcp-public-loop-"))
+assert.ok(binarySettings || hostRoot, "run this suite with a host test runner")
+const scratch = await mkdtemp(join(binarySettings?.output ?? tmpdir(), "dcp-public-loop-"))
 const project = join(scratch, "project")
 await mkdir(project)
 for (const key of [
@@ -43,18 +46,19 @@ for (const key of [
     delete process.env[key]
 process.env.OPENCODE_DB = join(scratch, "host.sqlite")
 process.env.OPENCODE_DISABLE_MODELS_FETCH = "true"
-process.env.OPENCODE_MODELS_PATH = join(
-    hostRoot,
-    "packages/opencode/test/tool/fixtures/models-api.json",
-)
+process.env.OPENCODE_MODELS_PATH = binarySettings
+    ? join(scratch, "models-api.json")
+    : join(hostRoot, "packages/opencode/test/tool/fixtures/models-api.json")
+if (binarySettings) await writeFile(process.env.OPENCODE_MODELS_PATH, "{}")
 process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "true"
 process.env.OPENCODE_DISABLE_LSP_DOWNLOAD = "true"
 process.env.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "true"
-process.env.OPENCODE_EXPERIMENTAL_NATIVE_LLM = String(native)
+process.env.OPENCODE_EXPERIMENTAL_NATIVE_LLM = String(binarySettings?.native ?? native)
 process.env.OPENCODE_PRINT_LOGS = "1"
 process.env.OPENCODE_LOG_LEVEL = "ERROR"
 
 const captures = []
+const binaryObservations = []
 const cleared = "[Old tool result content cleared]"
 const steps = settings.steps
 // The model's progress survives native summaries, which deliberately remove old
@@ -211,7 +215,7 @@ await writeFile(
     }),
 )
 await mkdir(join(process.env.XDG_CONFIG_HOME, "opencode"), { recursive: true })
-// Install the actual pinned host peer locally in each fresh config directory.
+// Install the selected peer locally in each fresh config directory.
 // This avoids unrelated registry downloads during host bootstrap without
 // replacing the loader, config service or any host implementation.
 for (const directory of [
@@ -220,12 +224,15 @@ for (const directory of [
 ]) {
     const scope = join(directory, "node_modules/@opencode-ai")
     await mkdir(scope, { recursive: true })
-    await symlink(join(hostRoot, "packages/plugin"), join(scope, "plugin"), "dir")
+    const peer = binarySettings
+        ? fileURLToPath(new URL("../../node_modules/@opencode-ai/plugin", import.meta.url))
+        : join(hostRoot, "packages/plugin")
+    await symlink(peer, join(scope, "plugin"), "dir")
 }
 await writeFile(
     join(process.env.XDG_CONFIG_HOME, "opencode/dcp.jsonc"),
     JSON.stringify({
-        enabled: true,
+        enabled: binarySettings?.enabled ?? true,
         autoUpdate: false,
     }),
 )
@@ -236,6 +243,7 @@ const port = reservation.address().port
 await new Promise((resolve) => reservation.close(resolve))
 let listener
 async function api(path, body) {
+    listener.assertRunning?.()
     const response = await fetch(new URL(path, listener.url), {
         method: body === undefined ? "GET" : "POST",
         headers: { "Content-Type": "application/json", "x-opencode-directory": project },
@@ -279,6 +287,11 @@ async function automaticPressure() {
         const session = await api("/session", { title: `${scenario} ${tag}` })
         const completed = await prompt(session.id, tag, "small")
         const history = await api(`/session/${session.id}/message`)
+        if (binarySettings)
+            await writeFile(
+                join(binarySettings.output, `history-${tag}.json`),
+                JSON.stringify(history, null, 2),
+            )
         const parts = toolParts(history)
         const requests = requestsFor(tag)
         const summaries = requests.filter(isSummary)
@@ -310,8 +323,35 @@ async function automaticPressure() {
                 JSON.stringify(body.messages).includes(cleared),
             ).length,
             highestUsage: Math.max(...ordinary.map((body) => body.auditUsage)),
+            ...(binarySettings
+                ? {
+                      pluginToolObserved: ordinary.some((body) =>
+                          body.tools?.some((tool) => tool.function?.name === "dcp_prune"),
+                      ),
+                      successfulTools: parts.filter(
+                          (part) =>
+                              part.state.status === "completed" &&
+                              (part.tool !== "bash" || part.state.metadata?.exit === 0),
+                      ).length,
+                      firstTool: {
+                          tool: parts[0]?.tool,
+                          status: parts[0]?.state.status,
+                          exit: parts[0]?.state.metadata?.exit ?? null,
+                          error: parts[0]?.state.error,
+                          durationMs: parts[0]?.state.time?.end - parts[0]?.state.time?.start,
+                      },
+                  }
+                : {}),
         }
         metrics.push(metric)
+        if (binarySettings) {
+            binaryObservations.push(metric)
+            assert.equal(
+                metric.pluginToolObserved,
+                binarySettings.enabled,
+                "DCP tool presence must match its configured switch",
+            )
+        }
         process.stdout.write(JSON.stringify(metric) + "\n")
         assert.equal(
             parts.length,
@@ -374,9 +414,10 @@ async function automaticPressure() {
             history.some((message) => message.info.summary === true),
             "native summaries are persisted",
         )
-        assert.ok(
+        assert.equal(
             ordinary.some((body) => body.tools.some((tool) => tool.function?.name === "dcp_prune")),
-            "the built plugin must be loaded through the host",
+            binarySettings?.enabled ?? true,
+            "the built plugin must match its configured switch",
         )
         if (scenario === "automatic-64k") {
             assert.ok(
@@ -410,10 +451,16 @@ async function automaticPressure() {
                 )
         }
     }
-    if (native) {
-        const session = await api("/session", { title: "Native explicit cancellation" })
-        const cancelStarted = Date.now()
-        const pending = prompt(session.id, "B", "small")
+    return metrics
+}
+
+async function explicitCancellation() {
+    const session = await api("/session", { title: "Explicit cancellation" })
+    const cancelStarted = Date.now()
+    const pending = prompt(session.id, "B", "small")
+    void pending.catch(() => undefined)
+    let settled = false
+    try {
         let running = false
         for (let attempt = 0; attempt < 100; attempt++) {
             const history = await api(`/session/${session.id}/message`)
@@ -426,7 +473,14 @@ async function automaticPressure() {
         assert.ok(running, "explicit cancellation must target an actually running tool")
         await api(`/session/${session.id}/abort`, {})
         await pending
-        const cancelled = toolParts(await api(`/session/${session.id}/message`))
+        settled = true
+        const history = await api(`/session/${session.id}/message`)
+        if (binarySettings)
+            await writeFile(
+                join(binarySettings.output, "history-cancel.json"),
+                JSON.stringify(history, null, 2),
+            )
+        const cancelled = toolParts(history)
         assert.equal(cancelled.length, 1)
         // The real shell returns a settled result on cancellation. Its null
         // exit status and explicit abort note distinguish it from success.
@@ -439,9 +493,13 @@ async function automaticPressure() {
             "explicit abort must stop the 30-second shell promptly",
         )
         assert.equal(emitted.B, 1, "cancelled session must not automatically continue")
-        metrics.push({ tag: "B", explicitlyCancelled: true })
+        return { tag: "B", explicitlyCancelled: true }
+    } finally {
+        if (!settled) {
+            await api(`/session/${session.id}/abort`, {}).catch(() => undefined)
+            await pending.catch(() => undefined)
+        }
     }
-    return metrics
 }
 
 async function baselineScenario() {
@@ -587,14 +645,63 @@ async function baselineScenario() {
     process.stdout.write(JSON.stringify({ scenario, ok: true }) + "\n")
 }
 
+const binaryReport = binarySettings
+    ? {
+          scenario,
+          runtime: binarySettings.native ? "native" : "ai-sdk",
+          dcpEnabled: binarySettings.enabled,
+          ok: false,
+          scratch,
+          checks: [],
+          observations: binaryObservations,
+      }
+    : undefined
+async function binaryCheck(name, run) {
+    try {
+        const evidence = await run()
+        binaryReport.checks.push({ name, status: "passed", evidence })
+    } catch (error) {
+        binaryReport.checks.push({ name, status: "failed", error: String(error).slice(0, 2000) })
+    }
+}
+
 try {
-    const { Server } = await import(
-        pathToFileURL(join(hostRoot, "packages/opencode/src/server/server.ts")).href
-    )
-    listener = await Server.listen({ hostname: "127.0.0.1", port })
+    if (binarySettings) {
+        const environment = binaryEnvironment(scratch, binarySettings.native, process.env.PATH)
+        await writeFile(
+            join(binarySettings.output, "isolation.json"),
+            JSON.stringify(
+                {
+                    binary: binarySettings.path,
+                    project,
+                    environment,
+                },
+                null,
+                2,
+            ),
+        )
+        listener = await startBinaryHost({
+            binary: binarySettings.path,
+            project,
+            port,
+            environment,
+            output: binarySettings.output,
+        })
+    } else {
+        const { Server } = await import(
+            pathToFileURL(join(hostRoot, "packages/opencode/src/server/server.ts")).href
+        )
+        listener = await Server.listen({ hostname: "127.0.0.1", port })
+    }
     process.stdout.write("host: HTTP listener ready\n")
-    if (automatic) {
+    if (binarySettings) {
+        await binaryCheck("automatic-compaction-settles-slow-tool", automaticPressure)
+        await binaryCheck("explicit-cancellation", explicitCancellation)
+        binaryReport.ok = binaryReport.checks.every((check) => check.status === "passed")
+        process.exitCode = binaryReport.ok ? 0 : 1
+    } else if (automatic) {
         const metrics = await automaticPressure()
+        if (native) metrics.push(await explicitCancellation())
         process.stdout.write(JSON.stringify({ scenario, ok: true, metrics }) + "\n")
     } else {
         await baselineScenario()
@@ -602,5 +709,17 @@ try {
 } finally {
     await listener?.stop()
     modelServer.stop(true)
-    await rm(scratch, { recursive: true, force: true })
+    if (binarySettings) {
+        await writeFile(
+            join(binarySettings.output, "captures.json"),
+            JSON.stringify(captures, null, 2),
+        )
+        await writeFile(
+            join(binarySettings.output, "result.json"),
+            JSON.stringify(binaryReport, null, 2) + "\n",
+        )
+        process.stdout.write(JSON.stringify(binaryReport) + "\n")
+    } else {
+        await rm(scratch, { recursive: true, force: true })
+    }
 }
