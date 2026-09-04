@@ -26,6 +26,7 @@
         "typecheck": "tsc --noEmit",
         "test": "node --import tsx --test tests/*.test.ts",
         "test:host": "node scripts/test-host.mjs",
+        "test:host:binary": "node scripts/test-host-binary.mjs",
         "format": "prettier --write .",
         "format:check": "prettier --check ."
     },

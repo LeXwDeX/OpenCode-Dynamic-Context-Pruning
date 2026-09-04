@@ -32,6 +32,8 @@ Native `/compact` keeps its own prompt and checkpoint behavior. DCP never calls 
 
 Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [architecture and validation](./ARCHITECTURE.md) for limitations.
 
+The official GraphAgent 1.0.39 macOS ARM64 artifact can interrupt a running tool during automatic compaction in Native LLM mode, with DCP both enabled and disabled. That combination is unsupported for tasks requiring reliable slow-tool settlement. AI SDK mode on the same artifact passed the slow-tool and explicit-cancellation controls. A passing development-source test does not establish released-artifact compatibility; see [published-host evidence](./ARCHITECTURE.md#published-host-evidence) for the tested scope and reproduction command.
+
 Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `~/.config/opencode/dcp.jsonc`), `$OPENCODE_CONFIG_DIR/dcp.jsonc`, then the nearest project `.opencode` directory containing a DCP configuration file. Each also accepts `.json`, with JSONC preferred. Directories without a DCP file are skipped during the upward search; only the nearest project layer is used, without merging more distant ancestors. The plugin does not create configuration files.
 
 ```jsonc
