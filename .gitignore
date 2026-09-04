@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.host/
 bun.lock
 
 # Build output

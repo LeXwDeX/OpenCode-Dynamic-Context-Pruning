@@ -64,7 +64,9 @@ cd /path/to/opencode-dynamic-context-pruning
 OPENCODE_SOURCE_ROOT=/tmp/dcp-host npm run test:host
 ```
 
-Node runs the tests; Bun executes the real host worker, matching the host runtime. The suite loads DCP through the actual host plugin loader/dispatcher and runs the actual message hydration, SQLite storage, provider transform and model SDK serialization. Only the external provider catalog/model network boundaries are replaced with deterministic local responses. It checks real wire call/result pairing and byte-identical stored history, not a copied serializer.
+Node runs the tests; Bun executes the real host workers, matching the host runtime. Component contract tests use real plugin loading/dispatch, message hydration, SQLite storage, provider transforms and SDK serialization. They seed deterministic history and substitute selected service boundaries to inspect exact hook behavior; the compaction component test records processor input instead of executing a model request.
+
+The public HTTP test starts the host's complete default service graph through `Server.listen` and loads the built plugin directly from `opencode.json`. Only the external model HTTP/SSE endpoint is replaced. Public session APIs drive two concurrent 100-step read loops, small/large model budgets, model switching, native summarization and continuation. Assertions inspect actual outgoing model requests and publicly read persisted history. This covers lifecycle behavior that direct hook tests cannot prove.
 
 This is a pinned host contract test, not a claim that every future host or model provider has been exercised. CI also typechecks/builds/imports against the minimum and latest V1 plugin/SDK versions. The required `opencode-compatibility` aggregate includes the real-host job; SpecGit policy is unchanged.
 
