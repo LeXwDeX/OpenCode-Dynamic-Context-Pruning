@@ -72,8 +72,10 @@ version. Do not also publish the same version locally.
 - 草稿拉取请求恒使裁决失败（`pr_draft`）：在 `specgit finish` 之前，
   先把它标为可评审——GitHub 用 `gh pr ready <number>`，GitLab 用
   `glab mr update <number> --ready`。
-- 用 `specgit finish` 收尾：裁决来自真实的 git、PR 与 CI 证据。退出码
-  0 是唯一的"完成"。
+- `specgit finish` 只读：裁决来自真实的 git、PR 与 CI 证据，退出码
+  0 是唯一的验收通过。已启用自动化时，继续运行
+  `specgit pr --merge --json`；它验证策略的 `target_branch`、重新验收
+  通过及当前 PR 头的全部 CI 检查通过，确认合并后才按配置关闭绑定议题。
 
 ### 议题标签
 
@@ -103,6 +105,9 @@ version. Do not also publish the same version locally.
 - `specgit setup` 安装代理入口（opencode 的命令、其他工具的可移植
   skill）；`specgit bind`、`specgit unbind`、`specgit accept` 是面向
   脚本与 CI 的自动化别名。
+- 自动化默认关闭（`--automation no`）。只有用户本人选择 yes，才能用
+  `specgit init --automation yes --merge-target <branch>` 开启；
+  `init --force` 可重新选择。代理不得替用户回答 yes。
 
 ### 建议题之前，先查重
 
@@ -141,6 +146,9 @@ version. Do not also publish the same version locally.
   聊天产物。平凡的回复与只读提问无需如此。
 - 唯一规则：交付完成当且仅当 `specgit finish` 退出 `0`。绝不凭任务
   清单、文件状态或自己跑过的测试宣布完成。
+- 沿用已有用户授权完成议题正文、PR 正文与 ready、CI 修复或重试、验收
+  以及授权范围内的合并闭环。只在缺少用户授权或平台权限时，携已准备好的
+  结果说明具体缺口；文档与入口指引本身不授予权限。
 - 按退出码分支，不按措辞：`1` = 证据齐全，修门槛点名的内容；`3` =
   证据缺失，先修环境（`specgit doctor`）。绝不把退出 `3` 当作成功。
 - 保持 PR 正文里的 `Closes #n` 引用完整；改动 PR 正文、头分支或 CI
