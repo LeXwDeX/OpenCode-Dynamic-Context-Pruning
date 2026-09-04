@@ -65,10 +65,10 @@ function hasAttachments(value: unknown): boolean {
     return Array.isArray(value) ? value.length > 0 : value !== undefined && value !== null
 }
 
-function attachmentsPresent(part: PartLike): boolean {
+function attachmentsPresent(part: PartLike, clearedStateAttachments = false): boolean {
     return (
         hasAttachments(part.attachments) ||
-        hasAttachments(part.state?.attachments) ||
+        (!clearedStateAttachments && hasAttachments(part.state?.attachments)) ||
         hasAttachments(part.state?.metadata?.attachments)
     )
 }
@@ -83,8 +83,17 @@ function jsonTokens(value: unknown): number | undefined {
 }
 
 /** Unknown media or host content is not assigned an invented token cost. */
-function estimatePart(part: PartLike): number | undefined {
+function estimatePart(part: PartLike, role: string | undefined): number | undefined {
     if (!part || typeof part !== "object") return undefined
+    // User references retain UI markers after the host expands their content
+    // into separate text parts. These markers are omitted from model requests.
+    if (
+        role === "user" &&
+        (part.type === "agent" ||
+            (part.type === "file" &&
+                (part.mime === "text/plain" || part.mime === "application/x-directory")))
+    )
+        return 0
     if (STRUCTURAL_PARTS.has(part.type ?? "")) return 0
     // These host-owned user parts serialize as fixed text. Their presence
     // after native compaction must not disable every future projection.
@@ -98,8 +107,13 @@ function estimatePart(part: PartLike): number | undefined {
         if (typeof part.text !== "string") return undefined
         return PART_OVERHEAD + estimateTokens(part.text)
     }
-    if (part.type !== "tool" || !part.state || attachmentsPresent(part)) return undefined
+    if (part.type !== "tool" || !part.state) return undefined
     const state = part.state
+    // The host omits only state.attachments for already-cleared completed
+    // assistant tools. Inputs, output shape and unfamiliar metadata still count.
+    const clearedStateAttachments =
+        role === "assistant" && state.status === "completed" && !!state.time?.compacted
+    if (attachmentsPresent(part, clearedStateAttachments)) return undefined
     const inputTokens = jsonTokens(state.input ?? {})
     if (inputTokens === undefined) return undefined
     let tokens =
@@ -140,7 +154,7 @@ export function estimateMessages(messages: readonly MessageLike[]): number | und
         }
         total += MESSAGE_OVERHEAD
         for (const part of message.parts) {
-            const tokens = estimatePart(part)
+            const tokens = estimatePart(part, message.info?.role)
             if (tokens === undefined) return undefined
             total += tokens
         }
@@ -162,7 +176,7 @@ function toolSteps(messages: readonly MessageLike[]): ToolStep[] {
                 steps.push(current)
                 current = { tools: [], tokens: MESSAGE_OVERHEAD }
             }
-            current.tokens += estimatePart(part) ?? 0
+            current.tokens += estimatePart(part, message.info?.role) ?? 0
             if (part.type === "tool") current.tools.push({ message: messageIndex, part: partIndex })
         }
         if (current.tools.length > 0) steps.push(current)

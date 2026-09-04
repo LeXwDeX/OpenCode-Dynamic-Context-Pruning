@@ -118,6 +118,56 @@ test("transform uses this request's model and commits into the original host arr
     assert.equal(deps.calls(), 2, "each request resolves its current model")
 })
 
+test("host reference markers and cleared attachments preserve normal and forced projection", async () => {
+    const changes: Array<(messages: any[]) => void> = [
+        (messages) =>
+            messages[0].parts.push({
+                type: "file",
+                mime: "text/plain",
+                url: "file:///repo/source.ts",
+            }),
+        (messages) =>
+            messages[0].parts.push({
+                type: "file",
+                mime: "application/x-directory",
+                url: "file:///repo/src",
+            }),
+        (messages) => messages[0].parts.push({ type: "agent", name: "explore" }),
+        (messages) => {
+            const state = messages[1].parts[0].state
+            state.time.compacted = 999
+            state.attachments = [
+                { type: "file", mime: "image/png", url: "data:image/png;base64,AAAA" },
+            ]
+        },
+    ]
+    for (const change of changes) {
+        for (const force of [false, true]) {
+            const deps = build()
+            const messages = history(force ? "large" : "small")
+            change(messages)
+            const before = structuredClone(messages)
+            const output = { messages }
+            if (force) deps.state.requestFold("ses_a")
+            await deps.transform({}, output)
+            assert.equal(output.messages, messages)
+            let newlyFolded = 0
+            for (const [index, message] of messages.entries()) {
+                for (const [partIndex, part] of message.parts.entries()) {
+                    const original = before[index].parts[partIndex]
+                    if (part.state?.time?.compacted && !original.state?.time?.compacted) {
+                        newlyFolded++
+                        delete part.state.time.compacted
+                    }
+                }
+            }
+            assert.ok(newlyFolded > 0)
+            assert.deepEqual(messages, before, "only new compacted markers may differ")
+            assert.equal(deps.state.consumeFold("ses_a"), false)
+        }
+    }
+})
+
 test("one forced normal request survives compaction and does not become permanent", async () => {
     const deps = build()
     deps.state.requestFold("ses_a")
