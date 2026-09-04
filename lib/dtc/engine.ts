@@ -196,7 +196,9 @@ function instructionRead(part: PartLike): boolean {
     // A read whose target cannot be established is not a verified candidate.
     if (typeof target !== "string") return true
     const name = target.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase()
-    return ["agents.md", "agents.override.md", "skill.md", "claude.md"].includes(name ?? "")
+    return ["agents.md", "agents.override.md", "skill.md", "claude.md", "context.md"].includes(
+        name ?? "",
+    )
 }
 
 function outputSavings(part: PartLike, config: DtcConfig): number {

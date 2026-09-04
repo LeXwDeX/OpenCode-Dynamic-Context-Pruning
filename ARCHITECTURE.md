@@ -15,7 +15,7 @@ DCP v6 has one compression operation: set a native compacted marker on an eligib
 
 The only permitted difference is `state.time.compacted` on selected terminal successful tools. Message and part counts, IDs, roles, order, callIDs, tool inputs, errors, user text, assistant conclusions, reasoning signatures and attachments are unchanged.
 
-The known candidate set is read/grep/glob and bash with explicit `metadata.exit === 0`. Unknown tool contracts cannot be opted into pruning through configuration. Skill/task results, instruction-file reads, reads that loaded dynamic instructions (`metadata.loaded`) and unsuccessful/incomplete outputs are protected.
+The known candidate set is read/grep/glob and bash with explicit `metadata.exit === 0`. Unknown tool contracts cannot be opted into pruning through configuration. Skill/task results, instruction-file reads, reads that loaded dynamic instructions (`metadata.loaded`) and unsuccessful/incomplete outputs are protected. Known instruction basenames are `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CONTEXT.md`, and `SKILL.md`, matched case-insensitively after normalizing path separators. A direct instruction-file read remains protected even when `metadata.loaded` is empty.
 
 Recent protection uses native step markers, or a whole assistant message when markers are absent. All tools in one parallel step are kept together. Both the minimum step count and minimum token count must be retained. A single huge step is protected even if this leaves the request over budget.
 

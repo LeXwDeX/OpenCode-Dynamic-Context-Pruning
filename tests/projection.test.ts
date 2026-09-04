@@ -79,6 +79,31 @@ test("one user turn with 100 tool steps folds old outputs while preserving exact
     assert.deepEqual(normalized, before, "only native compacted markers may differ")
 })
 
+test("explicit CONTEXT.md reads stay intact while old ordinary reads are folded", () => {
+    const source = conversation(100)
+    const parts = tools(source)
+    parts[0]!.state!.input = { filePath: "/repo/nested/CONTEXT.md" }
+    parts[1]!.state!.input = { filePath: "C:\\repo\\nested\\Context.md" }
+    // Explicit instruction-file reads are excluded from the host's resolved
+    // instruction list, so metadata.loaded alone cannot identify them.
+    parts[0]!.state!.metadata = { loaded: [] }
+    parts[1]!.state!.metadata = { loaded: [] }
+    const before = structuredClone(source)
+    const projected = projectMessages(source, {
+        inputBudget: 40000,
+        config: DTC_DEFAULTS,
+        now: 123456,
+    })
+    const projectedTools = tools(projected.messages)
+    assert.deepEqual(projectedTools.slice(0, 2), parts.slice(0, 2))
+    assert.ok(projectedTools[2]!.state!.time!.compacted, "ordinary old reads remain eligible")
+    assert.ok(projected.stats.estimatedAfter! <= projected.stats.targetTokens)
+    assert.deepEqual(source, before)
+    const normalized = structuredClone(projected.messages)
+    for (const part of tools(normalized)) delete part.state!.time!.compacted
+    assert.deepEqual(normalized, before, "inputs, tool pairing and stored outputs stay intact")
+})
+
 test("under budget leaves every output intact and force still protects recent steps", () => {
     const source = conversation(4)
     assert.deepEqual(run(source, { inputBudget: 1000000 }).messages, source)
