@@ -1,10 +1,9 @@
 version: 1
-delivery: pruning-policy-experiments
+delivery: stable-npm-toolchain
 context:
   kind: branch
-  branch: feat/48-pruning-policy-experiments
+  branch: feat/52-stable-npm-toolchain
 issues:
-  - 48
-  - 49
+  - 52
 issueKinds: []
-pr: 54
+pr: 55

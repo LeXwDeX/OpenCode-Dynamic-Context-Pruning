@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process"
 import path from "node:path"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
+import { parsePackMetadata } from "./parse-pack-metadata.mjs"
 
 const require = createRequire(import.meta.url)
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -82,6 +83,7 @@ function assertPackageJsonShape() {
             fail(`package.json files must include ${entry}`)
         }
     }
+    return pkg
 }
 
 function getImportStatements(source) {
@@ -207,15 +209,17 @@ function validateRuntimeImportGraph() {
     }
 }
 
-function validatePackedFiles() {
+function validatePackedFiles(pkg) {
     const output = execFileSync("npm", ["pack", "--dry-run", "--json"], {
         cwd: root,
         encoding: "utf8",
     })
 
-    const [result] = JSON.parse(output)
-    if (!result || !Array.isArray(result.files)) {
-        fail("npm pack --dry-run --json did not return file metadata")
+    let result
+    try {
+        result = parsePackMetadata(output, pkg)
+    } catch (error) {
+        fail(error.message)
     }
 
     const packedPaths = result.files.map((file) => file.path)
@@ -237,6 +241,6 @@ function validatePackedFiles() {
 }
 
 assertRepoFilesExist()
-assertPackageJsonShape()
+const pkg = assertPackageJsonShape()
 validateRuntimeImportGraph()
-validatePackedFiles()
+validatePackedFiles(pkg)

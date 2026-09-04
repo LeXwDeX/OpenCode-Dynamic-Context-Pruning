@@ -96,4 +96,6 @@ GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动�
 
 使用 npm 和 Node.js 的 `node:test`：`npm test`、`npm run typecheck`、`npm run format:check`、`npm run check:package`。真实宿主测试为 `npm run test:host`；环境准备及验证范围见[架构文档](./ARCHITECTURE.md)。
 
+开发工具链使用 Node.js 26.8.1 和 npm 12.0.2；执行 `npm ci --no-audit --no-fund` 安装，再单独运行 `npm audit --audit-level=high`。版本升级、安装脚本许可和上游依赖约束见[升级记录](./DEPENDENCY_UPGRADE.md)。
+
 许可证：[AGPL-3.0-or-later](./LICENSE)。

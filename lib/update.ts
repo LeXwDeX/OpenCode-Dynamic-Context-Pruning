@@ -10,8 +10,7 @@ type PackageJson = {
 }
 
 type UpdateResult =
-    | { available: true; name: string; current: string; latest: string }
-    | { available: false }
+    { available: true; name: string; current: string; latest: string } | { available: false }
 
 const PACKAGE_NAME = "@lexwdex-org/opencode-dcp"
 

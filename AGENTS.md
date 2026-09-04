@@ -13,7 +13,7 @@ request-local copy. Use npm. Architecture and real-host setup:
   Set `OPENCODE_SOURCE_ROOT` to the pinned checkout described in the architecture
   document. This test must not use the user's active host checkout or database.
 - `npm run format:check` and `npm run check:package` verify formatting and the
-  ESM tarball. `jsonc-parser` is bundled by tsup; preserve namespace imports.
+  ESM tarball. `jsonc-parser` is bundled by esbuild; preserve namespace imports.
 - CI requires Type Check, Build & Audit and opencode-compatibility. The latter
   aggregates the SDK matrix and real-host integration.
 
