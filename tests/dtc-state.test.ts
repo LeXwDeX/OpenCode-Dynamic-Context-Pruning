@@ -2,103 +2,82 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { DtcState } from "../lib/dtc/state"
 
-test("context limits are recorded per session and survive re-observation", () => {
+test("force folding is consumed once and isolated by session", () => {
     const state = new DtcState()
-    state.observeContextLimit("ses_a", 200_000)
-    state.observeContextLimit("ses_b", 32_000)
-    assert.equal(state.contextTokens("ses_a"), 200_000)
-    assert.equal(state.contextTokens("ses_b"), 32_000)
-    state.observeContextLimit("ses_a", 128_000)
-    assert.equal(state.contextTokens("ses_a"), 128_000)
-})
-
-test("invalid context limits are ignored", () => {
-    const state = new DtcState()
-    state.observeContextLimit("ses_a", undefined)
-    state.observeContextLimit("ses_a", Number.NaN)
-    state.observeContextLimit("ses_a", -5)
-    state.observeContextLimit("", 100)
-    assert.equal(state.contextTokens("ses_a"), undefined)
+    state.requestFold("ses_a")
+    assert.equal(state.consumeFold("ses_b"), false)
+    assert.equal(state.consumeFold("ses_a"), true)
+    assert.equal(state.consumeFold("ses_a"), false)
     assert.equal(state.stats().sessions, 0)
 })
 
-test("session table is LRU-bounded", () => {
+test("compaction skips never consume a pending normal-request fold", () => {
     const state = new DtcState()
-    for (let i = 0; i < 600; i++) {
-        state.observeContextLimit(`ses_${i}`, 1000)
-    }
-    assert.ok(state.stats().sessions <= 500)
-    assert.equal(state.contextTokens("ses_599"), 1000)
-    assert.equal(state.contextTokens("ses_0"), undefined)
-})
-
-test("compaction skip is one-shot per session", () => {
-    const state = new DtcState()
+    state.requestFold("ses_a")
     state.armCompactionSkip("ses_a")
     assert.equal(state.consumeCompactionSkip("ses_a"), true)
     assert.equal(state.consumeCompactionSkip("ses_a"), false)
-    assert.equal(state.consumeCompactionSkip("ses_b"), false)
+    assert.equal(state.consumeFold("ses_a"), true)
 })
 
-test("boundary marks raise the minimum fold level monotonically", () => {
+test("compaction cleanup and deletion remove only the matching state", () => {
     const state = new DtcState()
-    assert.equal(state.minLevel("ses_a"), 0)
-    state.markBoundary("ses_a", 1000, 2)
-    assert.equal(state.minLevel("ses_a"), 2)
-    assert.equal(state.boundaryMark("ses_a"), 1000)
-    state.markBoundary("ses_a", 2000, 3)
-    assert.equal(state.minLevel("ses_a"), 3)
-    state.markBoundary("ses_a", 3000, 2)
-    assert.equal(state.minLevel("ses_a"), 3, "a weaker mark never lowers the level")
-    assert.equal(state.boundaryMark("ses_a"), 3000, "the mark timestamp always advances")
-})
-
-test("digest cache stores, hits, and is LRU-bounded", () => {
-    const state = new DtcState()
-    state.storeDigest("k1", "digest-1")
-    assert.equal(state.cachedDigest("k1"), "digest-1")
-    assert.equal(state.cachedDigest("missing"), undefined)
-    for (let i = 0; i < 2500; i++) {
-        state.storeDigest(`bulk_${i}`, "d")
-    }
-    assert.ok(state.stats().digests <= 2000)
-    assert.equal(state.cachedDigest("k1"), undefined)
-})
-
-test("dropSession clears limits, marks, and skip flags but not digests", () => {
-    const state = new DtcState()
-    state.observeContextLimit("ses_a", 1000)
-    state.markBoundary("ses_a", 5, 2)
     state.armCompactionSkip("ses_a")
-    state.storeDigest("k", "d")
-    state.dropSession("ses_a")
-    assert.equal(state.contextTokens("ses_a"), undefined)
-    assert.equal(state.minLevel("ses_a"), 0)
+    state.requestFold("ses_a")
+    state.armCompactionSkip("ses_b")
+    state.clearCompactionSkip("ses_a")
     assert.equal(state.consumeCompactionSkip("ses_a"), false)
-    assert.equal(state.cachedDigest("k"), "d")
+    assert.equal(state.consumeFold("ses_a"), true)
+    state.dropSession("ses_b")
+    assert.equal(state.consumeCompactionSkip("ses_b"), false)
+    assert.equal(state.stats().sessions, 0)
 })
 
-test("params correlation index: lookup, latest-wins, drop cleanup, LRU bound", () => {
+test("pending state is bounded and repeated marks refresh recency", () => {
     const state = new DtcState()
-    state.recordParamsSession("ses_a", 1000)
-    state.recordParamsSession("ses_b", 2000)
-    assert.equal(state.sessionByUserTime(1000), "ses_a")
-    assert.equal(state.sessionByUserTime(2000), "ses_b")
-    assert.equal(state.sessionByUserTime(3000), undefined)
-    // Duplicate timestamps: the latest record wins.
-    state.recordParamsSession("ses_c", 1000)
-    assert.equal(state.sessionByUserTime(1000), "ses_c")
-    // Dropping a session removes its correlation entries.
-    state.dropSession("ses_c")
-    assert.equal(state.sessionByUserTime(1000), undefined)
-    assert.equal(state.sessionByUserTime(2000), "ses_b")
-    // LRU bound: 250 new entries evict the oldest beyond 200.
-    for (let i = 0; i < 250; i++) state.recordParamsSession("ses_x", 10_000 + i)
-    assert.equal(state.sessionByUserTime(2000), undefined)
-    assert.equal(state.sessionByUserTime(10_249), "ses_x")
-    assert.ok(state.stats().params <= 200)
-    // Garbage input is ignored.
-    state.recordParamsSession("", 5000)
-    state.recordParamsSession("ses_d", Number.NaN)
-    assert.equal(state.sessionByUserTime(5000), undefined)
+    for (let i = 0; i < 500; i++) state.requestFold(`ses_${i}`)
+    state.requestFold("ses_0")
+    state.requestFold("ses_500")
+    assert.equal(state.stats().sessions, 500)
+    assert.equal(state.consumeFold("ses_0"), true)
+    assert.equal(state.consumeFold("ses_1"), false)
+    state.requestFold("")
+    state.armCompactionSkip("")
+    assert.equal(state.consumeFold(""), false)
+})
+
+test("force requests may be evicted but a pending compaction guard is never evicted", () => {
+    const state = new DtcState()
+    state.armCompactionSkip("protected")
+    for (let i = 0; i < 499; i++) state.requestFold(`force_${i}`)
+    state.requestFold("new_force")
+    assert.equal(state.consumeCompactionSkip("protected"), true)
+    assert.equal(state.consumeFold("force_0"), false)
+    assert.equal(state.projectionBlockReason(), undefined)
+})
+
+test("exhausting guard capacity blocks projection for the lifetime of this instance", () => {
+    const state = new DtcState()
+    for (let i = 0; i < 500; i++) state.armCompactionSkip(`ses_${i}`)
+    assert.equal(state.requestFold("force_without_space"), false)
+    assert.equal(state.projectionBlockReason(), undefined)
+    state.armCompactionSkip("ses_overflow")
+    assert.equal(state.stats().sessions, 500)
+    assert.equal(state.stats().blockedReason, "compaction-guard-capacity")
+    assert.equal(state.consumeCompactionSkip("ses_0"), true)
+    state.dropSession("ses_1")
+    assert.equal(state.projectionBlockReason(), "compaction-guard-capacity")
+    assert.equal(state.requestFold("future_force"), false)
+})
+
+test("normal guard consumption reuses bounded capacity without tripping the circuit", () => {
+    const state = new DtcState()
+    for (let i = 0; i < 2000; i++) {
+        state.armCompactionSkip(`ses_${i}`)
+        assert.equal(state.consumeCompactionSkip(`ses_${i}`), true)
+        state.requestFold(`ses_${i}`)
+        assert.equal(state.consumeFold(`ses_${i}`), true)
+    }
+    assert.equal(state.stats().sessions, 0)
+    assert.equal(state.projectionBlockReason(), undefined)
 })

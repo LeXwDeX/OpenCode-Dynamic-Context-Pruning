@@ -1,41 +1,26 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "$id": "https://raw.githubusercontent.com/LeXwDeX/opencode-dynamic-context-pruning/master/dcp.schema.json",
-    "title": "DCP Plugin Configuration",
-    "description": "Dynamic tiered context compression for OpenCode: request-time folding plus semantic checkpoint quality for the host's own compaction",
+    "title": "DCP v6 configuration",
+    "description": "Request-scoped compression of old successful tool outputs. The host retains ownership of session storage and native compaction.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
         "$schema": {
-            "type": "string",
-            "description": "JSON Schema reference for editor autocomplete"
+            "type": "string"
         },
         "enabled": {
             "type": "boolean",
-            "default": true,
-            "description": "Enable DCP"
+            "default": true
         },
         "autoUpdate": {
             "type": "boolean",
             "default": true,
-            "description": "Show a non-destructive notification when a newer package is available"
+            "description": "Notify about a newer version; never installs it."
         },
         "debug": {
             "type": "boolean",
-            "default": false,
-            "description": "Enable debug logging"
-        },
-        "commands": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "enabled": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Register /dcp fold and /dcp status"
-                }
-            },
-            "default": { "enabled": true }
+            "default": false
         },
         "dtc": {
             "type": "object",
@@ -43,56 +28,42 @@
             "properties": {
                 "enabled": {
                     "type": "boolean",
-                    "default": true,
-                    "description": "Dynamic tiered compression: fold the outgoing model request by recency tiers, never touching the session or its state machine"
+                    "default": true
                 },
-                "tailTurns": {
-                    "type": "number",
-                    "minimum": 0,
+                "protectRecentSteps": {
+                    "type": "integer",
+                    "minimum": 1,
                     "default": 4,
-                    "description": "Conversation turns at the end that are never folded (kept verbatim)"
+                    "description": "Minimum number of recent complete tool execution steps retained verbatim, including within one user turn."
                 },
-                "lowWatermarkRatio": {
-                    "type": "number",
+                "protectRecentTokens": {
+                    "type": "integer",
                     "minimum": 0,
-                    "maximum": 1,
-                    "default": 0.5,
-                    "description": "Fraction of the context window below which no folding happens at all"
+                    "default": 16000,
+                    "description": "Extend recent step protection until this estimated token count and the minimum step count are both retained."
                 },
                 "targetRatio": {
                     "type": "number",
-                    "minimum": 0,
+                    "exclusiveMinimum": 0,
                     "maximum": 1,
                     "default": 0.7,
-                    "description": "Folding escalates (distant → middle → current) until the estimate fits this fraction of the context window"
+                    "description": "Fraction of the conservative current-model input budget available for message history; leaves room for system and tool definitions."
                 },
-                "driftThreshold": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 1,
-                    "default": 0.18,
-                    "description": "Jaccard similarity below which consecutive user messages count as a topic change (starts the protected current-task zone)"
+                "minimumSavingsTokens": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 512,
+                    "description": "Minimum estimated saving required to fold one eligible successful tool output."
                 },
-                "toolOutputKeepChars": {
-                    "type": "number",
-                    "minimum": 200,
-                    "default": 4000,
-                    "description": "Current-zone tool outputs longer than this are head+tail truncated"
-                },
-                "mergeRuns": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Validity-axis merging: repeated and failed tool runs in the middle/distant zones collapse to one surviving call, with counts kept in a _merged meta key"
+                "protectedTools": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "default": [],
+                    "description": "Additional tool names whose outputs must remain intact. Built-in protections cannot be disabled."
                 }
-            },
-            "default": {
-                "enabled": true,
-                "tailTurns": 4,
-                "lowWatermarkRatio": 0.5,
-                "targetRatio": 0.7,
-                "driftThreshold": 0.18,
-                "toolOutputKeepChars": 4000,
-                "mergeRuns": true
             }
         },
         "tool": {
@@ -102,10 +73,9 @@
                 "enabled": {
                     "type": "boolean",
                     "default": true,
-                    "description": "Register the model-invokable dcp_prune tool (marks a topic boundary and deepens folding; instant, never interrupts)"
+                    "description": "Expose dcp_prune, which requests one fold on the next ordinary model request. Only available when DTC is enabled."
                 }
-            },
-            "default": { "enabled": true }
+            }
         }
     }
 }

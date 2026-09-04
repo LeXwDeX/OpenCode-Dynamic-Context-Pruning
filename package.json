@@ -1,9 +1,9 @@
 {
     "$schema": "https://json.schemastore.org/package.json",
     "name": "@lexwdex-org/opencode-dcp",
-    "version": "5.1.0",
+    "version": "6.0.0",
     "type": "module",
-    "description": "Semantic pruning for OpenCode native context compaction",
+    "description": "Request-scoped compression of old successful OpenCode tool outputs",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "exports": {
@@ -25,6 +25,7 @@
         "dev": "opencode plugin dev",
         "typecheck": "tsc --noEmit",
         "test": "node --import tsx --test tests/*.test.ts",
+        "test:host": "node scripts/test-host.mjs",
         "format": "prettier --write .",
         "format:check": "prettier --check ."
     },
@@ -51,7 +52,6 @@
         "@opencode-ai/plugin": ">=1.4.3 <2"
     },
     "dependencies": {
-        "@opencode-ai/sdk": "^1.4.3",
         "jsonc-parser": "^3.3.1"
     },
     "devDependencies": {
@@ -65,6 +65,8 @@
     "files": [
         "dist/",
         "README.md",
+        "README.en.md",
+        "ARCHITECTURE.md",
         "LICENSE"
     ]
 }

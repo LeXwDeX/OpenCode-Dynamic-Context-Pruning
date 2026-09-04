@@ -24,13 +24,14 @@ export function toolPart(options: {
     return {
         type: "tool",
         id: nextID("part"),
+        callID: nextID("call"),
         tool: options.tool ?? "bash",
         state: {
             status: options.status ?? "completed",
             output: options.output ?? "",
             ...(options.error !== undefined ? { error: options.error } : {}),
             input: options.input ?? { command: "echo hi" },
-            time: {},
+            time: { start: 1, end: 2 },
         },
     }
 }
@@ -42,6 +43,7 @@ export function userMessage(text: string, created = 0): MessageLike {
             role: "user",
             sessionID: "ses_test",
             time: { created },
+            model: { providerID: "test", modelID: "test-model" },
         },
         parts: [textPart(text)],
     }
@@ -138,9 +140,7 @@ export function fakeLogger() {
     return { logger: logger as any, entries }
 }
 
-/** Fork hosts strip id/sessionID out of message payloads (both live in
- * database columns there); simulate that shape to exercise the engine's
- * chat.params correlation fallback. */
+/** Unsupported identity-free payloads must remain untouched. */
 export function toForkShape(messages: MessageLike[]): MessageLike[] {
     for (const message of messages) {
         const info = message.info as Record<string, unknown> | undefined

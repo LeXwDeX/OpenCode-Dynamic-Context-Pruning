@@ -7,43 +7,38 @@ import { fakeLogger } from "./fixtures"
 function build() {
     const state = new DtcState()
     const { logger } = fakeLogger()
-    const definition = createPruneTool({ state, logger, now: () => 42_000 }) as any
-    return { state, definition }
+    return { state, definition: createPruneTool({ state, logger }) as any }
 }
 
-test("the tool is named dcp_prune and takes no arguments", () => {
+test("the model tool has no arguments and accurately describes one-request behavior", () => {
     const { definition } = build()
     assert.equal(PRUNE_TOOL_NAME, "dcp_prune")
     assert.deepEqual(definition.args, {})
+    assert.match(definition.description, /只生效一次/)
+    assert.match(definition.description, /预算.*保持原样/)
 })
 
-test("the tool description promises instant, non-interrupting folding", () => {
-    const { definition } = build()
-    assert.match(definition.description, /话题.*变更/)
-    assert.match(definition.description, /瞬时/)
-    assert.match(definition.description, /不打断/)
-    assert.ok(!definition.description.includes("排队"), "no queueing semantics remain")
-})
-
-test("execute returns instantly, marks the boundary, and deepens folding", async () => {
+test("a tool call marks exactly one request without a client or history mutation", async () => {
     const { state, definition } = build()
-    const output = await definition.execute({}, { sessionID: "ses_tool" })
-    assert.match(output, /话题边界/)
-    assert.match(output, /未中断/)
-    assert.equal(state.minLevel("ses_tool"), 2)
-    assert.equal(state.boundaryMark("ses_tool"), 42_000)
+    const result = await definition.execute({}, { sessionID: "ses_a" })
+    assert.match(result, /仅生效一次/)
+    assert.equal(state.consumeFold("ses_b"), false)
+    assert.equal(state.consumeFold("ses_a"), true)
+    assert.equal(state.consumeFold("ses_a"), false)
 })
 
-test("tool calls never touch a client or session — no async work beyond state", async () => {
-    const { definition } = build()
-    const t0 = performance.now()
-    await definition.execute({}, { sessionID: "ses_fast" })
-    assert.ok(performance.now() - t0 < 5, "execute must be synchronous-scale fast")
-})
-
-test("marks are isolated per session", async () => {
+test("an unidentified tool call reports that it did not mark a request", async () => {
     const { state, definition } = build()
-    await definition.execute({}, { sessionID: "ses_x" })
-    assert.equal(state.minLevel("ses_y"), 0)
-    assert.equal(state.boundaryMark("ses_y"), undefined)
+    const result = await definition.execute({}, { sessionID: "" })
+    assert.match(result, /未设置/)
+    assert.equal(state.stats().sessions, 0)
+})
+
+test("the tool reports a tripped guard circuit instead of pretending to schedule folding", async () => {
+    const { state, definition } = build()
+    for (let i = 0; i < 501; i++) state.armCompactionSkip(`ses_${i}`)
+    const result = await definition.execute({}, { sessionID: "normal" })
+    assert.match(result, /本实例已停止折叠/)
+    assert.match(result, /未设置/)
+    assert.equal(state.consumeFold("normal"), false)
 })

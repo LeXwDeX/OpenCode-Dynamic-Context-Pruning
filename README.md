@@ -2,58 +2,45 @@
 
 [![npm version](https://img.shields.io/npm/v/@lexwdex-org/opencode-dcp.svg)](https://www.npmjs.com/package/@lexwdex-org/opencode-dcp)
 
-[**English**](./README.en.md) | **中文**
+[English](./README.en.md) | 中文
 
-DCP 以**动态分级请求期压缩（DTC）**管理 OpenCode 会话上下文：折叠发生在每次模型请求的消息序列化之前，**永不触碰会话状态机**——不调用 `session.summarize`、不产生压缩回合、不写会话存储。压缩对连续自动工作完全透明：agent 可以不间断运行数日，上下文压力由引擎在请求期自动消化。
+DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的成功工具输出。修改只作用于请求副本；原始会话历史、工具调用和原生压缩流程仍由宿主管理。
 
-## 工作原理
+## 工作方式
 
-宿主在每次模型请求前触发 `experimental.chat.messages.transform`，DCP 在钩子内对**请求期消息副本**做分级折叠（宿主每轮循环从数据库重建该数组，因此所有修改天然只作用于本次请求）：
+1. 从本次消息中的明确会话身份和最新用户消息的模型引用出发，通过宿主只读模型目录取得当前限额。缺少身份、模型或有效预算时保持原文。
+2. 估算消息正文、完整工具输入、输出及协议开销。输出预算预先扣除，默认的 `targetRatio` 为稍后加入的系统提示和工具定义留出余量。
+3. 保护最近的完整工具执行步骤：默认至少 4 步、至少 16,000 个估算 tokens，两项同时满足。一次用户请求内的多次工具执行也能区分远近；同一步中的并行工具一起保护。
+4. 超过目标时，从旧到新选择有足够收益的成功工具输出，设置宿主原生 `state.time.compacted` 标记。宿主在模型请求中显示 `[Old tool result content cleared]`，输入和调用身份仍完整存在。
+5. 在独立结果上完成计算，成功后提交请求副本；失败保持原文。
 
-```text
-┌────────────┬────────────┬────────────┬──────────────┐
-│ D 远距离区 │ M 中距离区 │ C 当前任务 │ T 尾部保护区 │
-│ 重度折叠   │ 中度折叠   │ 轻度折叠   │ 最后 4 轮    │
-│ 结构化摘要 │ 首行+标记  │ 截长输出   │ 一个字节不动 │
-└────────────┴────────────┴────────────┴──────────────┘
-        ◄── 预算不足时从最远端逐级加深 ──►
-```
+只处理已核实的 `read`、`grep`、`glob`，以及明确记录退出码 0 的 `bash` 输出。错误、未完成工具、未知工具、附件、技能/子任务结果及携带指令的读取输出（包括动态加载的指令）受到保护。用户可以增加受保护工具，但不能取消内置保护。
 
-- **T 尾部保护区**：最后 `dtc.tailTurns`（默认 4）轮对话**完全不折叠**。
-- **C 当前任务区**：自最近话题边界（词面漂移检测）以来的轮次，只把超长 tool 输出做首尾截断，任务细节不丢。
-- **M 中距离区**：长文本保留首行；tool 输出打宿主原生折叠标记（渲染为宿主自己的 `[Old tool result content cleared]`）；**tool 参数规约为目标骨架**（仅留 filePath/command 首行等，`oldString`/`newString`/`content` 等载荷全部丢弃）；**失败尝试（error part）折为短首行**——同一文件连改 3 次错 2 次，折叠后只剩 1 个可辨识调用骨架（`_merged: "edit×3 (2 err)"` 携带计数），最终状态以磁盘与当前任务区为准；推理内容清空。**偏题轮加深（#27）**：与当前任务区话题不连续的 M 轮（同一 Jaccard < `driftThreshold` 机械判据、逐轮独立判定，短文本永不触发）整轮塌缩为 D 档 `[DCP·轮N]` 机械摘要，#25/#26/#28 的 excision 叠加其上——纯机械判定，无模型调用。
-- **D 远距离区**：整轮塌缩为一行机械摘要（意图 / 动作 / 涉及文件 / 结果 / 错误数），tool 参数一并清空——硬事实保留在摘要里。
-- **有效性轴合并（#25/#26/#28）**：M/D 区同一目标的操作链（`edit`/`read`/`write`/`patch` 等，允许 ≤ 2 次其他调用穿插，绝不跨轮）、**相邻同工具错误链**（如连续 bash 失败风暴）与**字节级重复调用**（同工具 + 同输入哈希，任意距离、允许跨轮，取最后一次出现——相邻重复通常已被前两类吸收）在折叠前各自合并为 1 个幸存调用——被取代的成员**整段 excise**（逐消息永不清空），幸存者 `input` 注入 `_merged` 元数据（同工具 `edit×3 (2 err)`、混合工具 `ops×3`、重复调用 `grep×2`；错误链附加 `first:` 首个错误的首行作根因）；三类运行互斥，索引重叠时低优先级整体让位（artifact > error > duplicate）；D 区摘要携带**合并前**的计数。C/T 区零删除。
+用户消息、助手文本、推理及签名、工具输入和错误内容逐字保留。消息和 parts 的数量、顺序、身份及调用配对保持不变。没有话题猜测、机械摘要、输入缩减、调用合并或去重。
 
-**动态预算**：估算低于上下文窗口的 `lowWatermarkRatio`（默认 50%）时**完全不折叠**，短会话零开销；超出则按 D→M→C 从远到近逐级加深，直到估算落回 `targetRatio`（默认 70%）以内。窗口大小由 `chat.params` 钩子按会话自动学习，未知时 fail-open 不折叠。会话归属按官方宿主形状直读消息体 `sessionID`；fork 宿主把 id/sessionID 剥离进数据库列时，自动改用 `chat.params` 预记录的「用户消息时间戳 → 会话」索引反查归属（内容键关联，并发会话不串扰；会话首个请求尚无记录则跳过折叠）。
+**折叠是有损的工具输出清理。**过去的输出细节会从本次模型请求中消失，仍可在原始会话中查阅。DCP 不承诺任意长对话都能装入窗口：近期步骤、长输入、受保护内容或系统提示本身可能过大，此时保留保护规则，由宿主原生压缩处理。
 
-**三条结构铁律**（老版本"丢失标记号"问题的构造性排除）：
+## 手动控制与原生压缩
 
-1. 永不增删、重排消息；永不改 ID——tool-call 与 tool-result 的配对不可能断裂；唯一例外是 M/D 区有效性轴合并（#25）对**整段 tool part** 的 excise（逐消息永不清空，C/T 区豁免）；
-2. 只重写字符串载荷（text/output/reasoning），折叠 tool 输出用宿主原生 `time.compacted` 标记，不自造占位符协议；
-3. 一切修改仅存在于请求期副本，数据库中的会话历史逐字节不变。
+模型可调用 `dcp_prune`，请求**下一次普通模型请求**主动折叠符合条件的历史输出。工具立即返回，同样遵守近期和内容保护；请求消费后不影响未来策略，不保存永久加深等级。可向助手提出“调用 dcp_prune 压缩旧工具输出”。
 
-## 触发面
-
-- **自动**：无触发概念——每次请求按预算自动决定折叠深度，无需任何信号或边界。
-- **模型调用 `dcp_prune` 工具**：瞬时返回。标记话题边界（当前任务区从下一轮重算）并把本会话折叠下限提到 M 级——旧任务内容从下一次请求起被折叠。绝不打断当前工作。
-- **`/dcp fold`**：手动版本，直接把折叠下限提到最深档。
-- **`/dcp status`**：查看当前会话的轮数、token 估算、窗口与降级档位。
-- **宿主自身的 compaction**（`/compact`、上下文溢出兜底）：**100% 原生行为**——原生 anchored-summary 提示词、原生上一份检查点滚动合并，DCP 不做任何替换。DCP 只做两件事：把宿主尾部保护默认提升到 4 轮 / 32000 tokens（`compaction.tail_turns` / `preserve_recent_tokens`，用户显式配置优先）；压缩输入经过 transform 钩子时 DTC 一次性跳过，保证摘要器看到全保真内容。
+`/compact` 继续使用宿主原生行为。DCP 不触发 summarize、不写检查点、不替换摘要提示，也不改宿主 compaction 默认配置。宿主 compacting 钩子为随后同会话的 transform 设置一次跳过标志，确保摘要输入不被 DCP 改写。
 
 ## 安装
 
-```bash
-opencode plugin @lexwdex-org/opencode-dcp@latest --global
+在 OpenCode 配置中加入插件：
+
+```jsonc
+{
+    "plugin": ["@lexwdex-org/opencode-dcp@^6"],
+}
 ```
+
+需要支持 V1 插件接口的 OpenCode，插件 peer 范围为 `>=1.4.3 <2`。类型兼容矩阵检查最低版和最新 V1 版本；运行时契约另有固定真实宿主版本验证，详见[架构与验证](./ARCHITECTURE.md)。不带显式会话身份或模型信息的消息形状不会被猜测或压缩。
 
 ## 配置
 
-DCP 依次读取以下配置，后面的层覆盖前面的层：
-
-1. `~/.config/opencode/dcp.jsonc` 或 `dcp.json`
-2. `$OPENCODE_CONFIG_DIR/dcp.jsonc` 或 `dcp.json`
-3. 项目的 `.opencode/dcp.jsonc` 或 `dcp.json`
+按以下顺序覆盖：全局 `$XDG_CONFIG_HOME/opencode/dcp.jsonc`（默认 `~/.config/opencode/dcp.jsonc`）→ `$OPENCODE_CONFIG_DIR/dcp.jsonc` → 项目最近一级 `.opencode/dcp.jsonc`。同目录支持 `.json`，优先 `.jsonc`。插件不自动创建配置文件。
 
 ```jsonc
 {
@@ -61,49 +48,46 @@ DCP 依次读取以下配置，后面的层覆盖前面的层：
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
-    "commands": {
-        "enabled": true,
-    },
     "dtc": {
         "enabled": true,
-        "tailTurns": 4,
-        "lowWatermarkRatio": 0.5,
+        "protectRecentSteps": 4,
+        "protectRecentTokens": 16000,
         "targetRatio": 0.7,
-        "driftThreshold": 0.18,
-        "toolOutputKeepChars": 4000,
-        "mergeRuns": true,
+        "minimumSavingsTokens": 512,
+        "protectedTools": [],
     },
-    "tool": {
-        "enabled": true,
-    },
+    "tool": { "enabled": true },
 }
 ```
 
-| 键                        | 说明                                                                                                                        |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `dtc.enabled`             | 动态分级请求期压缩总开关                                                                                                    |
-| `dtc.tailTurns`           | 尾部保护轮数：最后 N 轮完全不折叠（默认 4）                                                                                 |
-| `dtc.lowWatermarkRatio`   | 估算低于窗口 × 该比例时完全不折叠（默认 0.5）                                                                               |
-| `dtc.targetRatio`         | 逐级加深折叠直到估算 ≤ 窗口 × 该比例（默认 0.7）                                                                            |
-| `dtc.driftThreshold`      | Jaccard 相似度低于该值视为话题变更，开启新的当前任务区（0–1，默认 0.18）                                                    |
-| `dtc.toolOutputKeepChars` | 当前任务区超长 tool 输出的首尾截断保留字符数（默认 4000）                                                                   |
-| `dtc.mergeRuns`           | M/D 区同目标操作链、相邻同工具错误链与字节级重复调用合并为 1 个幸存调用（有效性轴 #25/#26/#28，默认开启；关闭后回到纯折叠） |
-| `tool.enabled`            | 注册模型可调用的 `dcp_prune` 工具（瞬时标记话题边界，绝不打断工作）                                                         |
+| 参数                       | 含义                                             |
+| -------------------------- | ------------------------------------------------ |
+| `dtc.protectRecentSteps`   | 最近完整工具步骤的最少数量，整数且至少 1         |
+| `dtc.protectRecentTokens`  | 扩展近期保护区直到满足的估算 token 数，非负整数  |
+| `dtc.targetRatio`          | 消息历史占保守输入预算的比例，范围 `(0, 1]`      |
+| `dtc.minimumSavingsTokens` | 单个输出值得折叠的最低估算节省量，正整数         |
+| `dtc.protectedTools`       | 额外保护的工具名称                               |
+| `tool.enabled`             | 注册 `dcp_prune`；DTC 关闭时也不注册工具         |
+| `autoUpdate`               | 仅提示新版本，不安装或修改插件                   |
+| `debug`                    | 记录投影统计、跳过及安全熔断原因，不捕获会话正文 |
 
-## 从 3.x / 4.0 迁移
+无效 JSONC 整层忽略；类型错误的字段保留上一层有效值并显示提示。所有状态仅存在于插件进程内，控制标志有容量上限。
 
-3.x 的 `summarize`、`autoPrune` 配置块已删除（DCP 不再调用原生 summarize，也不再有启发式触发器）；5.0 起 `language` 与 `experimental.customPrompts` 也已删除——DCP 不再替换宿主压缩提示词，`dcp-prompts` 覆盖机制随之退役。这些键会显示迁移警告并被忽略。`autoPrune.driftThreshold` 自动迁移为 `dtc.driftThreshold`。更早的 `compress`、`manualMode`、`strategies`、`turnProtection` 等键维持删除状态。
+## 从 5.x 及更早版本升级
 
-行为变化：压缩不再产生可见的"检查点回合"，也不再需要任何静息边界或续跑机制——上下文折叠在每次请求内自动完成，会话与状态机零感知。语义检查点完全交还宿主原生 compaction（手动 `/compact` 或溢出兜底）：原生提示词、原生滚动合并，DCP 仅贡献尾部保护默认值与摘要输入的全保真保护。
+6.0 直接替换旧引擎，不提供旧策略开关：
 
-## 开发验证
+- 删除 D/M/C 分区、话题漂移和机械摘要；没有摘要缓存，也不再通过时间戳推测会话。
+- 删除结构合并与输入/错误/推理改写。`tailTurns`、`lowWatermarkRatio`、`driftThreshold`、`toolOutputKeepChars`、`mergeRuns` 不再生效。
+- 删除 `/dcp fold|status`。V1 命令钩子没有正式取消协议，旧实现的异常拦截不再保留；`commands.*` 退役。使用 `dcp_prune`，运行诊断见 debug 日志。
+- 手动折叠由永久等级改为下一次普通请求的一次性控制。
+- 不再注入 `compaction.tail_turns` 或 `preserve_recent_tokens`。已有用户配置仍由宿主读取。
+- 更早的 `compress`、`summarize`、`autoPrune`、`manualMode`、`strategies`、`turnProtection`、`language`、`experimental` 仍仅给退役提示；不会迁移出话题阈值。
 
-```bash
-npm test
-npm run typecheck
-npm run build
-npm run format:check
-npm run check:package
-```
+安装新版本后重启 OpenCode 以加载新钩子。历史会话无需迁移；DCP 从未将本版本的折叠结果写回历史。
 
-许可：AGPL-3.0-or-later。
+## 开发
+
+使用 npm 和 Node.js 的 `node:test`：`npm test`、`npm run typecheck`、`npm run format:check`、`npm run check:package`。真实宿主测试为 `npm run test:host`；环境准备及验证范围见[架构文档](./ARCHITECTURE.md)。
+
+许可证：[AGPL-3.0-or-later](./LICENSE)。

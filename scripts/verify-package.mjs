@@ -13,13 +13,22 @@ const builtinNames = new Set([
     ...builtinModules.map((name) => name.replace(/^node:/, "")),
 ])
 
-const requiredRepoFiles = ["dist/index.js", "dist/index.d.ts", "README.md", "LICENSE"]
+const requiredRepoFiles = [
+    "dist/index.js",
+    "dist/index.d.ts",
+    "README.md",
+    "README.en.md",
+    "ARCHITECTURE.md",
+    "LICENSE",
+]
 
 const requiredTarballFiles = [
     "package.json",
     "dist/index.js",
     "dist/index.d.ts",
     "README.md",
+    "README.en.md",
+    "ARCHITECTURE.md",
     "LICENSE",
 ]
 
@@ -68,7 +77,7 @@ function assertPackageJsonShape() {
     }
 
     const files = Array.isArray(pkg.files) ? pkg.files : []
-    for (const entry of ["dist/", "README.md", "LICENSE"]) {
+    for (const entry of ["dist/", "README.md", "README.en.md", "ARCHITECTURE.md", "LICENSE"]) {
         if (!files.includes(entry)) {
             fail(`package.json files must include ${entry}`)
         }

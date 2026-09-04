@@ -1,59 +1,34 @@
-# Dynamic Context Pruning for OpenCode
+# Dynamic Context Pruning
 
-[![npm version](https://img.shields.io/npm/v/@lexwdex-org/opencode-dcp.svg)](https://www.npmjs.com/package/@lexwdex-org/opencode-dcp)
+[中文](./README.md) | English
 
-**English** | [中文](./README.md)
+DCP folds older successful tool outputs before OpenCode serializes a model request. It operates on a request copy; the host retains ownership of stored history, tool execution, and native compaction.
 
-DCP manages OpenCode session context with **Dynamic Tiered Compression (DTC)**: folding happens inside every model request, before message serialization, and **never touches the session state machine** — no `session.summarize` calls, no compaction turns, no session writes. Compression is fully transparent to continuous autonomous work: an agent can run for days while the engine absorbs context pressure per request.
+## Policy
 
-## How it works
+The plugin resolves the current model from explicit message identity and the host's read-only provider catalog. It never guesses a session from timestamps or reuses a previous request's context window. Missing identity, model limits, or unsupported content causes an unchanged request.
 
-The host fires `experimental.chat.messages.transform` before every model request. DCP folds the **request-scoped message copy** inside that hook (the host rebuilds the array from the database on every loop iteration, so all mutations are inherently request-scoped):
+The engine preserves at least the latest four complete tool execution steps and 16,000 estimated tokens of recent steps. Both conditions apply. One user request can contain many separate steps; parallel tools in one step remain protected together.
 
-```text
-┌──────────────┬──────────────┬──────────────┬────────────────┐
-│ D distant    │ M middle     │ C current    │ T protected    │
-│ heavy fold   │ medium fold  │ light fold   │ last 4 turns   │
-│ digest lines │ first lines  │ truncate big │ never touched  │
-└──────────────┴──────────────┴──────────────┴────────────────┘
-        ◄── escalation deepens from the far end under budget pressure ──►
-```
+When history exceeds 70% of the conservative input budget, eligible old successful outputs are folded oldest first until the target is reached or no safe candidates remain. A fold only sets the native `state.time.compacted` marker. The host renders `[Old tool result content cleared]`; tool inputs and call/result identities remain intact.
 
-- **T tail zone**: the last `dtc.tailTurns` (default 4) conversation turns are **never folded**.
-- **C current-task zone**: turns since the latest topic boundary (lexical drift detection); only oversized tool outputs are head+tail truncated, task details survive.
-- **M middle zone**: long texts keep their first line; tool outputs get the host's native fold marker (rendered by the host as its own `[Old tool result content cleared]`); **tool arguments reduce to a target skeleton** (only filePath / command first line and friends — `oldString`/`newString`/`content` payloads are dropped); **failed attempts (error parts) fold to a short first line** — three edits on one file with two failures collapse to 1 recognizable call skeleton (`_merged: "edit×3 (2 err)"` carries the counts), with the final state owned by disk and the current-task zone; reasoning is emptied. **Off-topic deepening (#27)**: M turns topically discontinuous with the current-task zone (same Jaccard < `driftThreshold` mechanical test, judged per turn, short texts never qualify) collapse into the D-tier `[DCP·轮N]` mechanical digest, layered under the #25/#26/#28 excision — purely mechanical, no model calls.
-- **D distant zone**: whole turns collapse into one mechanical digest line (intent / actions / files touched / outcome / error count) and tool inputs are cleared — hard facts live on in the digest.
-- **Validity-axis merging (#25/#26/#28)**: same-target operation chains in the M/D zones (`edit`/`read`/`write`/`patch` …, ≤ 2 interleaved other calls, never crossing a turn), **adjacent same-tool error chains** (e.g. consecutive bash failure storms), and **byte-identical duplicate calls** (same tool + same stable input hash, at any distance, turn boundaries allowed, last occurrence survives — adjacent duplicates are usually absorbed by the first two kinds) each merge into 1 surviving call before folding — superseded members are excised as **whole parts** (a message is never emptied) and the survivor's `input` carries `_merged` meta (`edit×3 (2 err)` for same-tool chains, `ops×3` for mixed ones, `grep×2` for duplicates; error chains append the first error's first line as `first:`); the three run kinds are mutually exclusive — an index-overlapped lower-priority run yields whole (artifact > error > duplicate); D-zone digests carry **pre-merge** counts. Zero deletions in C/T.
+Eligible tools are known `read`, `grep`, `glob`, and `bash` with an explicit zero exit status. Errors, running tools, unknown tools, attachments, skill/task results, and instruction-bearing reads (including dynamically loaded instructions) remain protected. Additional tools can be protected in configuration.
 
-**Dynamic budget**: below `lowWatermarkRatio` of the context window (default 50%) **nothing is folded at all** — short sessions pay zero cost. Above it, folding escalates D→M→C from the far end until the estimate fits `targetRatio` (default 70%). The window size is learned per session from the `chat.params` hook; until it is known the engine fails open (no folding). Session attribution reads `sessionID` straight off the message payload on official hosts; on fork hosts that strip message IDs into database columns, DTC falls back to a `chat.params`-recorded "user-message timestamp → session" index (content-keyed, so concurrent sessions never cross-attribute; a session's very first request has no record yet and skips folding).
+User instructions, assistant text, reasoning signatures, tool inputs, errors, message/part counts, identities and ordering remain unchanged. There is no topic inference, synthetic digest, input reduction, structural merging, or deduplication. Projection is prepared independently and committed only on success.
 
-**Three structural laws** (the constructive exclusion of the old versions' "lost markers" failure):
+**Folding is lossy output cleanup.** Original outputs remain in stored history. Protected steps, long inputs and system instructions may themselves exceed the budget; DCP then leaves the protection rules intact and lets the host handle native compaction.
 
-1. Messages are never added, removed, or reordered; IDs never change — tool-call/tool-result pairing cannot break; the one exception is validity-axis merging (#25) excising **whole tool parts** in the M/D zones (never emptying a message, C/T zones exempt);
-2. Only string payloads are rewritten (text/output/reasoning), and tool-output folding uses the host's native `time.compacted` marker instead of a custom placeholder protocol;
-3. Every mutation lives in the request-scoped copy only — session history in the database stays byte-identical.
+## Controls
 
-## Trigger surfaces
+The model-facing `dcp_prune` tool requests one fold on the next ordinary request, subject to the same protections. It returns immediately and does not permanently change policy.
 
-- **Automatic**: there is nothing to trigger — every request decides its own fold depth from the budget. No signals, no boundaries, no queue.
-- **The `dcp_prune` model tool**: returns instantly. Marks a topic boundary (the current-task zone restarts at the next turn) and raises this session's minimum fold level to M — old-task content folds from the next request onward. Never interrupts the running turn.
-- **`/dcp fold`**: manual variant; raises the minimum fold level to the deepest tier.
-- **`/dcp status`**: shows turns, token estimate, context window, and the manual fold level for the session.
-- **The host's own compaction** (`/compact`, context-overflow fallback): **100% native behavior** — the host's anchored-summary prompt and its own previous-checkpoint rolling merge stay fully in charge; DCP replaces nothing. DCP contributes exactly two things: it raises the host's tail-protection defaults to 4 turns / 32000 tokens (`compaction.tail_turns` / `preserve_recent_tokens`; explicit user config always wins), and DTC skips the compaction input via a one-shot flag so the summarizer sees full-fidelity content.
+Native `/compact` keeps its own prompt and checkpoint behavior. DCP never calls summarize, writes session history, or changes host compaction defaults. Its compacting hook arms one skip for the following transform in that session.
 
-## Install
+## Installation and configuration
 
-```bash
-opencode plugin @lexwdex-org/opencode-dcp@latest --global
-```
+Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [architecture and validation](./ARCHITECTURE.md) for limitations.
 
-## Configuration
-
-DCP reads these layers in order; later layers override earlier ones:
-
-1. `~/.config/opencode/dcp.jsonc` or `dcp.json`
-2. `$OPENCODE_CONFIG_DIR/dcp.jsonc` or `dcp.json`
-3. Project `.opencode/dcp.jsonc` or `dcp.json`
+Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `~/.config/opencode/dcp.jsonc`), `$OPENCODE_CONFIG_DIR/dcp.jsonc`, then the nearest project `.opencode/dcp.jsonc`. Each also accepts `.json`, with JSONC preferred. The plugin does not create configuration files.
 
 ```jsonc
 {
@@ -61,49 +36,32 @@ DCP reads these layers in order; later layers override earlier ones:
     "enabled": true,
     "autoUpdate": true,
     "debug": false,
-    "commands": {
-        "enabled": true,
-    },
     "dtc": {
         "enabled": true,
-        "tailTurns": 4,
-        "lowWatermarkRatio": 0.5,
+        "protectRecentSteps": 4,
+        "protectRecentTokens": 16000,
         "targetRatio": 0.7,
-        "driftThreshold": 0.18,
-        "toolOutputKeepChars": 4000,
-        "mergeRuns": true,
+        "minimumSavingsTokens": 512,
+        "protectedTools": [],
     },
-    "tool": {
-        "enabled": true,
-    },
+    "tool": { "enabled": true },
 }
 ```
 
-| Key                       | Description                                                                                                                                                                                      |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `dtc.enabled`             | Master switch for dynamic tiered request-time compression                                                                                                                                        |
-| `dtc.tailTurns`           | Turns at the end that are never folded (default 4)                                                                                                                                               |
-| `dtc.lowWatermarkRatio`   | No folding below window × ratio (default 0.5)                                                                                                                                                    |
-| `dtc.targetRatio`         | Escalate folding until the estimate fits window × ratio (default 0.7)                                                                                                                            |
-| `dtc.driftThreshold`      | Jaccard similarity below which consecutive user messages start a new current-task zone (0–1, default 0.18)                                                                                       |
-| `dtc.toolOutputKeepChars` | Head+tail characters kept for oversized current-zone tool outputs (default 4000)                                                                                                                 |
-| `dtc.mergeRuns`           | Merge same-target operation chains, adjacent same-tool error chains, and byte-identical duplicate calls in M/D into 1 surviving call (validity axis #25/#26/#28, default on; off = pure folding) |
-| `tool.enabled`            | Register the model-invokable `dcp_prune` tool (instant boundary mark, never interrupts)                                                                                                          |
+`protectRecentSteps` is a positive integer; `protectRecentTokens` is nonnegative; `targetRatio` is in `(0, 1]`; `minimumSavingsTokens` is a positive integer. `protectedTools` adds protections without disabling built-in ones. Invalid JSONC rejects the entire layer; invalid fields retain previous valid values. `autoUpdate` only notifies. Debug logs contain operational metadata, not conversation dumps.
 
-## Migrating from 3.x / 4.0
+## Migrating to v6
 
-The 3.x `summarize` and `autoPrune` config blocks are gone (DCP no longer calls native summarize and has no heuristic triggers); since 5.0 `language` and `experimental.customPrompts` are gone as well — DCP no longer replaces the host's compaction prompt, so the `dcp-prompts` override machinery retired with it. Such keys produce a migration warning and are ignored. `autoPrune.driftThreshold` migrates automatically to `dtc.driftThreshold`. Older `compress`, `manualMode`, `strategies`, `turnProtection` keys remain removed.
+The old engine is removed, without a legacy mode. The retired `tailTurns`, `lowWatermarkRatio`, `driftThreshold`, `toolOutputKeepChars`, `mergeRuns` and `commands.*` settings produce migration notices and are ignored.
 
-Behavior change: compression no longer produces a visible "checkpoint turn" and needs no at-rest boundaries or continuation machinery — context folds automatically inside each request, invisible to the session and its state machine. Semantic checkpoints are fully handed back to the host's native compaction (manual `/compact` or the overflow fallback): native prompt, native rolling merge — DCP only contributes the tail-protection defaults and full-fidelity protection of the summarizer input.
+The `/dcp fold|status` commands are removed because the V1 command hook has no supported cancellation result. Use `dcp_prune` for manual folding and debug logs for diagnostics. Manual folding now affects one request, not every future task.
+
+DCP no longer injects `compaction.tail_turns` or `preserve_recent_tokens`. Existing user configuration is still owned by the host. Older `compress`, `summarize`, `autoPrune`, `manualMode`, `strategies`, `turnProtection`, `language` and `experimental` settings remain retired. No topic-threshold migration is performed.
+
+Restart OpenCode after upgrading. Stored history requires no migration.
 
 ## Development
 
-```bash
-npm test
-npm run typecheck
-npm run build
-npm run format:check
-npm run check:package
-```
+Use npm and Node's `node:test`: `npm test`, `npm run typecheck`, `npm run format:check`, and `npm run check:package`. Real-host validation uses `npm run test:host`; setup is documented in [architecture](./ARCHITECTURE.md).
 
-License: AGPL-3.0-or-later.
+License: [AGPL-3.0-or-later](./LICENSE).
