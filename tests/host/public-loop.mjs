@@ -7,6 +7,16 @@ import { createServer } from "node:net"
 
 // A separate Bun process runs the complete host HTTP server with its default
 // service graph. All mutations below go through the public session API.
+const scenario = process.argv[2] ?? "public-host-loop"
+const settings = {
+    "public-host-loop": { steps: 100, context: 32_000, tags: ["A", "B"] },
+    "automatic-64k": { steps: 56, context: 64_000, tags: ["A", "B"] },
+    "automatic-32k": { steps: 40, context: 32_000, tags: ["A"] },
+    "native-slow-tool": { steps: 6, context: 32_000, tags: ["A", "B"] },
+}[scenario]
+assert.ok(settings, `unknown public host scenario: ${scenario}`)
+const automatic = scenario !== "public-host-loop"
+const native = scenario === "native-slow-tool"
 const hostRoot = process.env.DCP_HOST_ROOT
 assert.ok(hostRoot, "run this suite with npm run test:host")
 const scratch = await mkdtemp(join(tmpdir(), "dcp-public-loop-"))
@@ -40,20 +50,32 @@ process.env.OPENCODE_MODELS_PATH = join(
 process.env.OPENCODE_DISABLE_DEFAULT_PLUGINS = "true"
 process.env.OPENCODE_DISABLE_LSP_DOWNLOAD = "true"
 process.env.OPENCODE_EXPERIMENTAL_EVENT_SYSTEM = "true"
+process.env.OPENCODE_EXPERIMENTAL_NATIVE_LLM = String(native)
 process.env.OPENCODE_PRINT_LOGS = "1"
 process.env.OPENCODE_LOG_LEVEL = "ERROR"
 
 const captures = []
 const cleared = "[Old tool result content cleared]"
-const steps = 100
+const steps = settings.steps
+// The model's progress survives native summaries, which deliberately remove old
+// tool calls from later requests. Each session has a distinct task tag.
+const emitted = { A: 0, B: 0 }
+const isSummary = (body) =>
+    [
+        "Create a new anchored summary from the conversation history.",
+        "Update the anchored summary below using the conversation history above.",
+    ].some((text) => JSON.stringify(body.messages).includes(text))
+// Larger late files make the protected recent steps eventually cross the
+// native context boundary, after earlier ordinary outputs were DCP candidates.
+const evidenceLines = (step) => (scenario === "automatic-64k" && step >= 32 ? 1_600 : 240)
 const evidence = (tag, step) =>
-    `EVIDENCE_${tag}_${step}_START\n${"original tool evidence\n".repeat(240)}EVIDENCE_${tag}_${step}_END`
-for (const tag of ["A", "B"]) {
+    `EVIDENCE_${tag}_${step}_START\n${"original tool evidence\n".repeat(evidenceLines(step))}EVIDENCE_${tag}_${step}_END`
+for (const tag of settings.tags) {
     for (let step = 0; step < steps; step++)
         await writeFile(join(project, `${tag}-${step}.txt`), evidence(tag, step))
 }
 
-function sse(model, delta, finish = "stop") {
+function sse(model, delta, finish = "stop", usage = 10) {
     const chunk = (value, reason = null) => ({
         id: "chatcmpl-local",
         object: "chat.completion.chunk",
@@ -67,7 +89,7 @@ function sse(model, delta, finish = "stop") {
             chunk(delta),
             {
                 ...chunk({}, finish),
-                usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
+                usage: { prompt_tokens: usage, completion_tokens: 1, total_tokens: usage + 1 },
             },
         ]
             .map((item) => `data: ${JSON.stringify(item)}\n\n`)
@@ -86,33 +108,34 @@ const modelServer = Bun.serve({
     async fetch(request) {
         assert.equal(new URL(request.url).pathname, "/v1/chat/completions")
         const body = await request.json()
-        captures.push(body)
         const serialized = JSON.stringify(body.messages)
+        const tag = settings.tags.find((value) => serialized.includes(`DCP_CASE_${value}`))
+        let usage = automatic ? Math.ceil(JSON.stringify(body).length / 4) : 10
+        // This completed model response already exceeds a 32K input budget.
+        // Its pending slow tool must settle before automatic compaction begins.
+        if (native && tag === "A" && emitted.A === 0 && !isSummary(body)) usage = 30_000
+        captures.push({ ...body, auditUsage: usage, auditEmitted: tag ? emitted[tag] : 0 })
+        const respond = (delta, finish = "stop") => sse(body.model, delta, finish, usage)
         if (JSON.stringify(body).includes("Generate a title for this conversation"))
-            return sse(body.model, { content: "Host integration test" })
-        const summary = serialized.includes(
-            "Create a new anchored summary from the conversation history.",
-        )
-        if (summary)
-            return sse(body.model, {
-                content:
-                    "## Goal\nPreserve DCP_CASE_A requirements.\n## Progress\nRead all 100 files.\n## Next Steps\nReport complete.",
+            return respond({ content: "Host integration test" })
+        if (isSummary(body)) {
+            assert.ok(tag, "the native summary must preserve the originating task")
+            return respond({
+                content: automatic
+                    ? `## Goal\nPreserve DCP_CASE_${tag} requirements.\n## Progress\nExecuted ${emitted[tag]} tools.\n## Next Steps\nContinue through tool ${steps}, then report complete.`
+                    : "## Goal\nPreserve DCP_CASE_A requirements.\n## Progress\nRead all 100 files.\n## Next Steps\nReport complete.",
             })
-        if (serialized.includes("DCP_RESUME"))
-            return sse(body.model, { content: "DCP_RESUME complete." })
-        const tag = serialized.includes("DCP_CASE_A")
-            ? "A"
-            : serialized.includes("DCP_CASE_B")
-              ? "B"
-              : undefined
-        if (!tag) return sse(body.model, { content: "Host integration test" })
-        const calls = body.messages.flatMap((message) => message.tool_calls ?? [])
-        if (calls.length < steps) {
-            const step = calls.length
+        }
+        if (serialized.includes("DCP_RESUME")) return respond({ content: "DCP_RESUME complete." })
+        if (!tag) return respond({ content: "Host integration test" })
+        if (emitted[tag] < steps) {
+            const step = emitted[tag]++
             if (step % 25 === 0)
-                process.stdout.write(`host ${tag}: starting tool ${step + 1}/${steps}\n`)
-            return sse(
-                body.model,
+                process.stdout.write(
+                    `host ${scenario}/${tag}: starting tool ${step + 1}/${steps}\n`,
+                )
+            const slow = native && step === 0
+            return respond(
                 {
                     tool_calls: [
                         {
@@ -120,10 +143,18 @@ const modelServer = Bun.serve({
                             id: `call_${tag}_${step}`,
                             type: "function",
                             function: {
-                                name: "read",
-                                arguments: JSON.stringify({
-                                    filePath: join(project, `${tag}-${step}.txt`),
-                                }),
+                                name: slow ? "bash" : "read",
+                                arguments: JSON.stringify(
+                                    slow
+                                        ? {
+                                              command:
+                                                  tag === "A"
+                                                      ? "sleep 2"
+                                                      : "sleep 30; printf DCP_CANCEL_MISSED",
+                                              description: "Isolated slow tool regression",
+                                          }
+                                        : { filePath: join(project, `${tag}-${step}.txt`) },
+                                ),
                             },
                         },
                     ],
@@ -131,7 +162,7 @@ const modelServer = Bun.serve({
                 "tool_calls",
             )
         }
-        return sse(body.model, { content: `DCP_CASE_${tag} completed all ${steps} reads.` })
+        return respond({ content: `DCP_CASE_${tag} completed all ${steps} tools.` })
     },
 })
 
@@ -158,7 +189,7 @@ await writeFile(
         small_model: "test/large",
         permission: "allow",
         lsp: false,
-        compaction: { auto: false, prune: false, tail_turns: 0 },
+        ...(!automatic ? { compaction: { auto: false, prune: false, tail_turns: 0 } } : {}),
         provider: {
             test: {
                 name: "Local test",
@@ -166,7 +197,10 @@ await writeFile(
                 env: [],
                 npm: "@ai-sdk/openai-compatible",
                 options: { apiKey: "local-test-only", baseURL: `${modelServer.url.origin}/v1` },
-                models: { small: model("small", 32_000), large: model("large", 2_000_000) },
+                models: {
+                    small: model("small", settings.context),
+                    large: model("large", 2_000_000),
+                },
             },
         },
     }),
@@ -214,8 +248,18 @@ const prompt = (sessionID, tag, modelID) =>
         parts: [
             {
                 type: "text",
-                text: `DCP_CASE_${tag}: Read all 100 evidence files in order and preserve the original constraints.`,
+                text: `DCP_CASE_${tag}: Execute all ${steps} tools in order and preserve the original constraints.`,
             },
+            ...(scenario === "automatic-64k" && tag === "B"
+                ? [
+                      {
+                          type: "file",
+                          mime: "text/plain",
+                          filename: "B-0.txt",
+                          url: pathToFileURL(join(project, "B-0.txt")).href,
+                      },
+                  ]
+                : []),
         ],
     })
 const toolParts = (messages) =>
@@ -223,12 +267,179 @@ const toolParts = (messages) =>
 const requestsFor = (tag) =>
     captures.filter((body) => JSON.stringify(body.messages).includes(`DCP_CASE_${tag}`))
 
-try {
-    const { Server } = await import(
-        pathToFileURL(join(hostRoot, "packages/opencode/src/server/server.ts")).href
-    )
-    listener = await Server.listen({ hostname: "127.0.0.1", port })
-    process.stdout.write("host: HTTP listener ready\n")
+async function automaticPressure() {
+    const metrics = []
+    const tags = native ? ["A"] : settings.tags
+    for (const tag of tags) {
+        const session = await api("/session", { title: `${scenario} ${tag}` })
+        const completed = await prompt(session.id, tag, "small")
+        const history = await api(`/session/${session.id}/message`)
+        const parts = toolParts(history)
+        const requests = requestsFor(tag)
+        const summaries = requests.filter(isSummary)
+        const ordinary = requests.filter((body) => !isSummary(body))
+        const firstSummary = requests.findIndex(isSummary)
+        const beforeSummary = requests.slice(0, firstSummary < 0 ? undefined : firstSummary)
+        const prunedBeforeSummary = beforeSummary.filter((body) =>
+            JSON.stringify(body.messages).includes(cleared),
+        ).length
+        for (const request of requests) {
+            assert.deepEqual(
+                request.messages
+                    .flatMap((message) => message.tool_calls ?? [])
+                    .map((call) => call.id),
+                request.messages
+                    .filter((message) => message.role === "tool")
+                    .map((message) => message.tool_call_id),
+                "every ordinary and summary request keeps tool calls paired with their results",
+            )
+        }
+        const metric = {
+            tag,
+            context: settings.context,
+            tools: parts.length,
+            completed: parts.filter((part) => part.state.status === "completed").length,
+            summaries: summaries.length,
+            prunedBeforeSummary,
+            prunedRequests: ordinary.filter((body) =>
+                JSON.stringify(body.messages).includes(cleared),
+            ).length,
+            highestUsage: Math.max(...ordinary.map((body) => body.auditUsage)),
+        }
+        metrics.push(metric)
+        process.stdout.write(JSON.stringify(metric) + "\n")
+        assert.equal(
+            parts.length,
+            steps,
+            "the real host must execute every planned tool exactly once",
+        )
+        assert.equal(emitted[tag], steps)
+        for (let step = 0; step < steps; step++) {
+            const part = parts[step]
+            assert.equal(part.callID, `call_${tag}_${step}`)
+            assert.equal(part.state.status, "completed", JSON.stringify(part.state))
+            assert.equal(
+                part.state.time.compacted,
+                undefined,
+                "request projection must not persist",
+            )
+            if (native && step === 0) {
+                assert.equal(part.tool, "bash")
+                assert.equal(
+                    part.state.metadata.exit,
+                    0,
+                    "automatic compaction must let slow bash exit successfully",
+                )
+                assert.ok(part.state.time.end - part.state.time.start >= 1_900)
+            } else {
+                assert.equal(part.tool, "read")
+                assert.ok(part.state.output.includes(`EVIDENCE_${tag}_${step}_START`))
+                assert.ok(part.state.output.includes(`EVIDENCE_${tag}_${step}_END`))
+                assert.equal(
+                    part.state.output.match(/original tool evidence/g)?.length,
+                    evidenceLines(step),
+                    "full tool output remains in storage",
+                )
+            }
+        }
+        assert.ok(
+            completed.parts.some(
+                (part) =>
+                    part.type === "text" &&
+                    part.text === `DCP_CASE_${tag} completed all ${steps} tools.`,
+            ),
+            "the public prompt must complete after automatic continuation",
+        )
+        assert.ok(
+            summaries.length >= (scenario === "automatic-32k" ? 2 : 1),
+            "growing reported usage must trigger real native compaction",
+        )
+        assert.ok(summaries[0].auditEmitted < steps, "native summary occurs before task completion")
+        for (const summary of summaries) {
+            assert.ok(
+                !JSON.stringify(summary.messages).includes(cleared),
+                "native summary must never receive DCP markers",
+            )
+            assert.ok(
+                summary.messages.some((message) => message.role === "tool"),
+                "native summary includes actual tool history",
+            )
+        }
+        assert.ok(
+            history.some((message) => message.info.summary === true),
+            "native summaries are persisted",
+        )
+        assert.ok(
+            ordinary.some((body) => body.tools.some((tool) => tool.function?.name === "dcp_prune")),
+            "the built plugin must be loaded through the host",
+        )
+        if (scenario === "automatic-64k") {
+            assert.ok(
+                prunedBeforeSummary > 0,
+                `${tag}: DCP must prune before the first native summary`,
+            )
+            const clearedResult = beforeSummary
+                .flatMap((body) => body.messages)
+                .find(
+                    (message) =>
+                        message.role === "tool" &&
+                        JSON.stringify(message.content).includes(cleared),
+                )
+            assert.ok(clearedResult)
+            const originalResult = summaries[0].messages.find(
+                (message) =>
+                    message.role === "tool" && message.tool_call_id === clearedResult.tool_call_id,
+            )
+            assert.ok(
+                originalResult,
+                "summary must contain the same previously cleared tool result",
+            )
+            assert.ok(
+                JSON.stringify(originalResult.content).includes(`EVIDENCE_${tag}_`),
+                "summary receives original output that DCP previously cleared on the ordinary wire",
+            )
+            if (tag === "B")
+                assert.ok(
+                    history[0].parts.some((part) => part.type === "file"),
+                    "the legal file reference must survive host persistence",
+                )
+        }
+    }
+    if (native) {
+        const session = await api("/session", { title: "Native explicit cancellation" })
+        const cancelStarted = Date.now()
+        const pending = prompt(session.id, "B", "small")
+        let running = false
+        for (let attempt = 0; attempt < 100; attempt++) {
+            const history = await api(`/session/${session.id}/message`)
+            if (toolParts(history).some((part) => part.state.status === "running")) {
+                running = true
+                break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 25))
+        }
+        assert.ok(running, "explicit cancellation must target an actually running tool")
+        await api(`/session/${session.id}/abort`, {})
+        await pending
+        const cancelled = toolParts(await api(`/session/${session.id}/message`))
+        assert.equal(cancelled.length, 1)
+        // The real shell returns a settled result on cancellation. Its null
+        // exit status and explicit abort note distinguish it from success.
+        assert.equal(cancelled[0].state.status, "completed")
+        assert.equal(cancelled[0].state.metadata.exit, null)
+        assert.ok(cancelled[0].state.output.includes("aborted before completion"))
+        assert.ok(!cancelled[0].state.output.includes("DCP_CANCEL_MISSED"))
+        assert.ok(
+            Date.now() - cancelStarted < 15_000,
+            "explicit abort must stop the 30-second shell promptly",
+        )
+        assert.equal(emitted.B, 1, "cancelled session must not automatically continue")
+        metrics.push({ tag: "B", explicitlyCancelled: true })
+    }
+    return metrics
+}
+
+async function baselineScenario() {
     const a = await api("/session", { title: "DCP public loop A" })
     const b = await api("/session", { title: "DCP public loop B" })
     process.stdout.write("host: isolated sessions created\n")
@@ -351,7 +562,21 @@ try {
         ),
         "the persisted native checkpoint must enter the continuation request",
     )
-    process.stdout.write(JSON.stringify({ scenario: "public-host-loop", ok: true }) + "\n")
+    process.stdout.write(JSON.stringify({ scenario, ok: true }) + "\n")
+}
+
+try {
+    const { Server } = await import(
+        pathToFileURL(join(hostRoot, "packages/opencode/src/server/server.ts")).href
+    )
+    listener = await Server.listen({ hostname: "127.0.0.1", port })
+    process.stdout.write("host: HTTP listener ready\n")
+    if (automatic) {
+        const metrics = await automaticPressure()
+        process.stdout.write(JSON.stringify({ scenario, ok: true, metrics }) + "\n")
+    } else {
+        await baselineScenario()
+    }
 } finally {
     await listener?.stop()
     modelServer.stop(true)

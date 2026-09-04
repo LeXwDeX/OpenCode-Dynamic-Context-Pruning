@@ -120,6 +120,66 @@ test("compacted output estimation still includes the complete tool input", () =>
     assert.equal(estimateMessages(source), compacted, "stored compacted output is not sent")
 })
 
+test("attachments already cleared by the host do not disable further output projection", () => {
+    for (const force of [false, true]) {
+        const source = conversation(8)
+        const compacted = tools(source)[0]!
+        compacted.state!.time!.compacted = 999
+        compacted.state!.input!.content = "input ".repeat(10000)
+        const baseline = run(source, { force })
+        compacted.state!.attachments = [
+            { type: "file", mime: "image/png", url: "data:image/png;base64,AAAA" },
+        ]
+        const before = structuredClone(source)
+        const projected = run(source, { force })
+        assert.ok(projected.stats.foldedTools > 0)
+        assert.deepEqual(projected.stats, baseline.stats)
+        assert.ok(projected.stats.estimatedAfter! > 15000, "full compacted-tool input still counts")
+        assert.deepEqual(tools(projected.messages)[0], compacted)
+        assert.deepEqual(source, before)
+        for (const part of tools(projected.messages).slice(1)) delete part.state!.time!.compacted
+        assert.deepEqual(projected.messages, before, "existing markers and attachments stay intact")
+    }
+})
+
+test("cleared attachments do not bypass tool payload or host-role validation", () => {
+    const changes: Array<(message: MessageLike, part: PartLike) => void> = [
+        (message) => delete message.info!.role,
+        (message) => {
+            message.info!.role = "user"
+        },
+        (_, part) => delete part.state!.output,
+        (_, part) => {
+            part.state!.input!.cycle = part.state!.input
+        },
+        (_, part) => {
+            part.state!.status = "running"
+        },
+        (_, part) => {
+            part.state!.time!.compacted = 0
+        },
+        (_, part) => {
+            part.attachments = ["unfamiliar"]
+        },
+        (_, part) => {
+            part.state!.metadata!.attachments = ["unfamiliar"]
+        },
+    ]
+    for (const change of changes) {
+        const source = conversation(8)
+        const part = tools(source)[0]!
+        part.state!.time!.compacted = 999
+        part.state!.attachments = [
+            { type: "file", mime: "image/png", url: "data:image/png;base64,AAAA" },
+        ]
+        change(source[1]!, part)
+        const projected = run(source, { force: true })
+        assert.equal(projected.stats.skipped, "unknown-content")
+        assert.equal(projected.stats.foldedTools, 0)
+        assert.deepEqual(projected.messages, source)
+    }
+})
+
 test("only verified successful output contracts are eligible", () => {
     const source = conversation(18)
     const parts = tools(source)
@@ -187,6 +247,47 @@ test("file media and unfamiliar parts do not produce a false budget success", ()
         assert.equal(projected.stats.estimatedBefore, undefined)
         assert.equal(projected.stats.overBudget, true)
         assert.equal(projected.stats.skipped, "unknown-content")
+    }
+})
+
+test("user file, directory and agent reference markers do not disable old-output projection", () => {
+    const markers: PartLike[] = [
+        { type: "file", mime: "text/plain", url: "file:///repo/source.ts" },
+        { type: "file", mime: "application/x-directory", url: "file:///repo/src" },
+        { type: "agent", name: "explore" },
+    ]
+    for (const marker of markers) {
+        for (const force of [false, true]) {
+            const source = conversation(8)
+            const baseline = run(source, { force })
+            source[0]!.parts!.push(marker)
+            const before = structuredClone(source)
+            const projected = run(source, { force })
+            assert.ok(projected.stats.foldedTools > 0)
+            assert.deepEqual(projected.stats, baseline.stats)
+            assert.deepEqual(projected.messages[0], before[0])
+            assert.deepEqual(source, before)
+            for (const part of tools(projected.messages)) delete part.state!.time!.compacted
+            assert.deepEqual(projected.messages, before, "only native compacted markers may differ")
+        }
+    }
+})
+
+test("reference markers in unverified message roles remain unknown content", () => {
+    for (const role of ["assistant", "system", undefined]) {
+        for (const marker of [
+            { type: "file", mime: "text/plain", url: "file:///repo/source.ts" },
+            { type: "file", mime: "application/x-directory", url: "file:///repo/src" },
+            { type: "agent", name: "explore" },
+        ]) {
+            const source = conversation(8)
+            source[0]!.info!.role = role
+            source[0]!.parts!.push(marker)
+            const projected = run(source, { force: true })
+            assert.equal(projected.stats.skipped, "unknown-content")
+            assert.equal(projected.stats.foldedTools, 0)
+            assert.deepEqual(projected.messages, source)
+        }
     }
 })
 

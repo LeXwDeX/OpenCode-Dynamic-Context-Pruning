@@ -16,7 +16,11 @@ Eligible tools are known `read`, `grep`, `glob`, and `bash` with an explicit zer
 
 User instructions, assistant text, reasoning signatures, tool inputs, errors, message/part counts, identities and ordering remain unchanged. There is no topic inference, synthetic digest, input reduction, structural merging, or deduplication. Projection is prepared independently and committed only on success.
 
+Host markers for ordinary file, directory, and agent references do not disable pruning. Their expanded text is counted and the markers remain intact. Already-compacted tools are estimated using the host's cleared output, even when stored history retains attachments. Media that still reaches the model and unfamiliar content keep the request unchanged rather than receiving a guessed token cost.
+
 **Folding is lossy output cleanup.** Original outputs remain in stored history. Protected steps, long inputs and system instructions may themselves exceed the budget; DCP then leaves the protection rules intact and lets the host handle native compaction.
+
+The host may start automatic compaction from the previous response's reported usage before the next pruning hook runs. A small context window or large system/tool definitions can therefore trigger a native summary before any old steps become eligible. `targetRatio` limits estimated history, not the final provider request, and insufficient capacity never lowers recent-step protection automatically. Successful summary continuation and settlement of running tools remain host execution contracts.
 
 ## Controls
 

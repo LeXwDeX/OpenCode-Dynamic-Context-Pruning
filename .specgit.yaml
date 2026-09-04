@@ -1,17 +1,14 @@
 version: 1
-delivery: request-safe-compression
+delivery: pruning-continuity
 context:
   kind: branch
-  branch: fix/34-request-safe-compression
+  branch: fix/38-pruning-continuity
 issues:
-  - 34
-  - 35
-  - 36
+  - 38
+  - 39
 issueKinds:
-  - issue: 34
+  - issue: 38
     kind: kind::fix
-  - issue: 35
-    kind: kind::fix
-  - issue: 36
+  - issue: 39
     kind: kind::test
-pr: 37
+pr: 40
