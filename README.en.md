@@ -70,4 +70,6 @@ Restart OpenCode after upgrading. Stored history requires no migration.
 
 Use npm and Node's `node:test`: `npm test`, `npm run typecheck`, `npm run format:check`, and `npm run check:package`. Real-host validation uses `npm run test:host`; setup is documented in [architecture](./ARCHITECTURE.md).
 
+The development toolchain uses Node.js 26.8.1 and npm 12.0.2. Install with `npm ci --no-audit --no-fund`, then run `npm audit --audit-level=high` separately. See the [upgrade record](./DEPENDENCY_UPGRADE.md) for versions, install-script permissions and upstream dependency constraints.
+
 License: [AGPL-3.0-or-later](./LICENSE).

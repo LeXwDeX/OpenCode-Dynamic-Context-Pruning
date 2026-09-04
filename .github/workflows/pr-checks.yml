@@ -19,11 +19,17 @@ jobs:
             - name: Setup Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: "20"
+                  node-version: "26.8.1"
                   cache: "npm"
 
+            - name: Install and verify npm CLI
+              run: |
+                  npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
+                  test "$(node --version)" = "v26.8.1"
+                  test "$(npm --version)" = "12.0.2"
+
             - name: Install dependencies
-              run: npm ci
+              run: npm ci --no-audit --no-fund
 
             - name: Format check
               run: npm run format:check
@@ -38,8 +44,7 @@ jobs:
               run: npm run check:package
 
             - name: Security audit
-              # npm 11 uses the supported bulk endpoint without legacy quick-audit fallback.
-              run: npx --yes --package=npm@11.19.1 -- npm audit --audit-level=high
+              run: npm audit --audit-level=high
               continue-on-error: false
 
     compatibility-matrix:
@@ -57,14 +62,20 @@ jobs:
             - name: Setup Node.js
               uses: actions/setup-node@v7
               with:
-                  node-version: "24"
+                  node-version: "26.8.1"
                   cache: "npm"
 
+            - name: Install and verify npm CLI
+              run: |
+                  npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
+                  test "$(node --version)" = "v26.8.1"
+                  test "$(npm --version)" = "12.0.2"
+
             - name: Install dependencies
-              run: npm ci
+              run: npm ci --no-audit --no-fund
 
             - name: Install OpenCode compatibility target
-              run: npm install --no-save --package-lock=false "@opencode-ai/plugin@${{ matrix.opencode }}" "@opencode-ai/sdk@${{ matrix.opencode }}"
+              run: npm install --no-save --package-lock=false --no-audit --no-fund "@opencode-ai/plugin@${{ matrix.opencode }}" "@opencode-ai/sdk@${{ matrix.opencode }}"
 
             - name: Type check
               run: npm run typecheck
@@ -96,11 +107,17 @@ jobs:
             - name: Setup Node.js test runner
               uses: actions/setup-node@v7
               with:
-                  node-version: "24"
+                  node-version: "26.8.1"
                   cache: "npm"
 
+            - name: Install and verify npm CLI
+              run: |
+                  npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
+                  test "$(node --version)" = "v26.8.1"
+                  test "$(npm --version)" = "12.0.2"
+
             - name: Install plugin dependencies
-              run: npm ci
+              run: npm ci --no-audit --no-fund
 
             - name: Checkout pinned host implementation
               uses: actions/checkout@v7
