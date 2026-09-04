@@ -105,7 +105,7 @@ jobs:
               uses: actions/checkout@v7
               with:
                   repository: LeXwDeX/OpenCode-GraphAgent
-                  ref: 743d99ff4b79bcafeffc4d5e8624060b3af6ca13
+                  ref: 8d9972908c308da1836a004cebe27c7c23db1acc
                   path: .host/opencode
 
             - name: Setup host runtime

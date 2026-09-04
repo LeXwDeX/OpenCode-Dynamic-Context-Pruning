@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 // This is the host implementation under test, not an SDK-only compatibility check.
-export const HOST_COMMIT = "743d99ff4b79bcafeffc4d5e8624060b3af6ca13"
+export const HOST_COMMIT = "8d9972908c308da1836a004cebe27c7c23db1acc"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const host = process.env.OPENCODE_SOURCE_ROOT && resolve(process.env.OPENCODE_SOURCE_ROOT)
