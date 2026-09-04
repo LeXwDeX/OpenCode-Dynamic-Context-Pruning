@@ -1,8 +1,16 @@
 version: 1
-delivery: 28-duplicate-dedup
+delivery: request-safe-compression
 context:
   kind: branch
-  branch: feat/28-28-duplicate-dedup
+  branch: fix/34-request-safe-compression
 issues:
-  - 28
-pr: 33
+  - 34
+  - 35
+  - 36
+issueKinds:
+  - issue: 34
+    kind: kind::fix
+  - issue: 35
+    kind: kind::fix
+  - issue: 36
+    kind: kind::test
