@@ -1,11 +1,9 @@
 version: 1
-delivery: host-boundary-evidence
+delivery: pruning-policy-experiments
 context:
   kind: branch
-  branch: feat/45-host-boundary-evidence
+  branch: feat/48-pruning-policy-experiments
 issues:
-  - 45
-  - 46
-  - 47
+  - 48
+  - 49
 issueKinds: []
-pr: 53
