@@ -1,9 +1,10 @@
 version: 1
-delivery: stable-npm-toolchain
+delivery: release-6-0-2
 context:
   kind: branch
-  branch: feat/52-stable-npm-toolchain
+  branch: chore/56-release-6-0-2
 issues:
-  - 52
-issueKinds: []
-pr: 55
+  - 56
+issueKinds:
+  - issue: 56
+    kind: kind::chore
