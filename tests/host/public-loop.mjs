@@ -70,9 +70,14 @@ const isSummary = (body) =>
 const evidenceLines = (step) => (scenario === "automatic-64k" && step >= 32 ? 1_600 : 240)
 const evidence = (tag, step) =>
     `EVIDENCE_${tag}_${step}_START\n${"original tool evidence\n".repeat(evidenceLines(step))}EVIDENCE_${tag}_${step}_END`
+const evidencePath = (tag, step) =>
+    !automatic && step === 1
+        ? join(project, tag, "CONTEXT.md")
+        : join(project, `${tag}-${step}.txt`)
 for (const tag of settings.tags) {
+    if (!automatic) await mkdir(join(project, tag))
     for (let step = 0; step < steps; step++)
-        await writeFile(join(project, `${tag}-${step}.txt`), evidence(tag, step))
+        await writeFile(evidencePath(tag, step), evidence(tag, step))
 }
 
 function sse(model, delta, finish = "stop", usage = 10) {
@@ -153,7 +158,7 @@ const modelServer = Bun.serve({
                                                       : "sleep 30; printf DCP_CANCEL_MISSED",
                                               description: "Isolated slow tool regression",
                                           }
-                                        : { filePath: join(project, `${tag}-${step}.txt`) },
+                                        : { filePath: evidencePath(tag, step) },
                                 ),
                             },
                         },
@@ -469,6 +474,23 @@ async function baselineScenario() {
             .at(-1)
         const calls = final.messages.flatMap((message) => message.tool_calls ?? [])
         const results = final.messages.filter((message) => message.role === "tool")
+        assert.equal(parts[1].state.input.filePath, evidencePath(tag, 1))
+        assert.deepEqual(
+            parts[1].state.metadata.loaded,
+            [],
+            "direct CONTEXT.md reads do not mark themselves as dynamically loaded instructions",
+        )
+        assert.equal(
+            results.find((result) => result.tool_call_id === `call_${tag}_1`)?.content,
+            parts[1].state.output,
+            "the model receives the full old CONTEXT.md output even under pruning pressure",
+        )
+        if (tag === "A")
+            assert.equal(
+                results.find((result) => result.tool_call_id === `call_${tag}_0`)?.content,
+                cleared,
+                "an ordinary old read still prunes alongside the protected instructions",
+            )
         assert.equal(calls.length, steps)
         assert.deepEqual(
             calls.map((call) => call.id),

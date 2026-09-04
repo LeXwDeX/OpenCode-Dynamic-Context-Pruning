@@ -14,7 +14,7 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 4. 超过目标时，从旧到新选择有足够收益的成功工具输出，设置宿主原生 `state.time.compacted` 标记。宿主在模型请求中显示 `[Old tool result content cleared]`，输入和调用身份仍完整存在。
 5. 在独立结果上完成计算，成功后提交请求副本；失败保持原文。
 
-只处理已核实的 `read`、`grep`、`glob`，以及明确记录退出码 0 的 `bash` 输出。错误、未完成工具、未知工具、附件、技能/子任务结果及携带指令的读取输出（包括动态加载的指令）受到保护。用户可以增加受保护工具，但不能取消内置保护。
+只处理已核实的 `read`、`grep`、`glob`，以及明确记录退出码 0 的 `bash` 输出。错误、未完成工具、未知工具、附件、技能/子任务结果及携带指令的读取输出（包括动态加载的指令）受到保护。直接读取 `AGENTS.md`、`AGENTS.override.md`、`CLAUDE.md`、`CONTEXT.md` 和 `SKILL.md` 也受保护，不依赖动态加载标记。用户可以增加受保护工具，但不能取消内置保护。
 
 用户消息、助手文本、推理及签名、工具输入和错误内容逐字保留。消息和 parts 的数量、顺序、身份及调用配对保持不变。没有话题猜测、机械摘要、输入缩减、调用合并或去重。
 
@@ -44,7 +44,7 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 
 ## 配置
 
-按以下顺序覆盖：全局 `$XDG_CONFIG_HOME/opencode/dcp.jsonc`（默认 `~/.config/opencode/dcp.jsonc`）→ `$OPENCODE_CONFIG_DIR/dcp.jsonc` → 项目最近一级 `.opencode/dcp.jsonc`。同目录支持 `.json`，优先 `.jsonc`。插件不自动创建配置文件。
+按以下顺序覆盖：全局 `$XDG_CONFIG_HOME/opencode/dcp.jsonc`（默认 `~/.config/opencode/dcp.jsonc`）→ `$OPENCODE_CONFIG_DIR/dcp.jsonc` → 项目最近一级包含 DCP 配置文件的 `.opencode` 目录。同目录支持 `.json`，优先 `.jsonc`。没有 DCP 配置文件的目录会继续向上查找；找到后只使用最近一级，不再合并更上层的项目配置。插件不自动创建配置文件。
 
 ```jsonc
 {
@@ -75,7 +75,7 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 | `autoUpdate`               | 仅提示新版本，不安装或修改插件                   |
 | `debug`                    | 记录投影统计、跳过及安全熔断原因，不捕获会话正文 |
 
-无效 JSONC 整层忽略；类型错误的字段保留上一层有效值并显示提示。所有状态仅存在于插件进程内，控制标志有容量上限。
+三个整数参数均不能超过 JavaScript 安全整数上限 `9007199254740991`；`protectedTools` 中每个名称必须包含非空白字符。无效 JSONC 整层忽略；类型错误或越界的字段保留上一层有效值并显示提示。所有状态仅存在于插件进程内，控制标志有容量上限。
 
 ## 从 5.x 及更早版本升级
 

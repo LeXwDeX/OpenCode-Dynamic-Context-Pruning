@@ -51,7 +51,7 @@ jobs:
         # Exact version on purpose (no ^): the gate must evaluate with the
         # same CLI generation that wrote the binding; upgrades are a
         # deliberate re-init. --no-save keeps the adopting tree clean.
-        run: npm install --no-save --no-audit --no-fund specgit@1.10.1
+        run: npm install --no-save --no-audit --no-fund specgit@1.11.0
 
       - name: Wait for sibling checks
         # The verdict must see the OTHER required checks in a terminal

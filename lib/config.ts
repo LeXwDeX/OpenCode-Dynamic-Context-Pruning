@@ -157,7 +157,10 @@ function configFile(directory: string): string | undefined {
 function projectConfig(directory: string): string | undefined {
     for (let current = directory; ; current = dirname(current)) {
         const candidate = join(current, ".opencode")
-        if (existsSync(candidate) && statSync(candidate).isDirectory()) return configFile(candidate)
+        if (existsSync(candidate) && statSync(candidate).isDirectory()) {
+            const path = configFile(candidate)
+            if (path) return path
+        }
         if (dirname(current) === current) return undefined
     }
 }

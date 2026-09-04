@@ -1,14 +1,13 @@
 version: 1
-delivery: pruning-continuity
+delivery: audit-correctness
 context:
   kind: branch
-  branch: fix/38-pruning-continuity
+  branch: feat/41-audit-correctness
 issues:
-  - 38
-  - 39
-issueKinds:
-  - issue: 38
-    kind: kind::fix
-  - issue: 39
-    kind: kind::test
-pr: 40
+  - 41
+  - 42
+  - 43
+  - 44
+  - 51
+issueKinds: []
+pr: 50

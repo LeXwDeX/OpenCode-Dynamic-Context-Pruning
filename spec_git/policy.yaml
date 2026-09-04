@@ -3,3 +3,6 @@ required_checks:
   - Type Check, Build & Audit
   - opencode-compatibility
 language: zh
+automation:
+  merge: false
+  close_issues: false

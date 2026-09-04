@@ -38,7 +38,8 @@ jobs:
               run: npm run check:package
 
             - name: Security audit
-              run: npm audit --audit-level=high
+              # npm 11 uses the supported bulk endpoint without legacy quick-audit fallback.
+              run: npx --yes --package=npm@11.19.1 -- npm audit --audit-level=high
               continue-on-error: false
 
     compatibility-matrix:

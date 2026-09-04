@@ -12,7 +12,7 @@ The engine preserves at least the latest four complete tool execution steps and 
 
 When history exceeds 70% of the conservative input budget, eligible old successful outputs are folded oldest first until the target is reached or no safe candidates remain. A fold only sets the native `state.time.compacted` marker. The host renders `[Old tool result content cleared]`; tool inputs and call/result identities remain intact.
 
-Eligible tools are known `read`, `grep`, `glob`, and `bash` with an explicit zero exit status. Errors, running tools, unknown tools, attachments, skill/task results, and instruction-bearing reads (including dynamically loaded instructions) remain protected. Additional tools can be protected in configuration.
+Eligible tools are known `read`, `grep`, `glob`, and `bash` with an explicit zero exit status. Errors, running tools, unknown tools, attachments, skill/task results, and instruction-bearing reads (including dynamically loaded instructions) remain protected. Direct reads of `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CONTEXT.md`, and `SKILL.md` are also protected without dynamic-loading metadata. Additional tools can be protected in configuration.
 
 User instructions, assistant text, reasoning signatures, tool inputs, errors, message/part counts, identities and ordering remain unchanged. There is no topic inference, synthetic digest, input reduction, structural merging, or deduplication. Projection is prepared independently and committed only on success.
 
@@ -32,7 +32,7 @@ Native `/compact` keeps its own prompt and checkpoint behavior. DCP never calls 
 
 Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [architecture and validation](./ARCHITECTURE.md) for limitations.
 
-Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `~/.config/opencode/dcp.jsonc`), `$OPENCODE_CONFIG_DIR/dcp.jsonc`, then the nearest project `.opencode/dcp.jsonc`. Each also accepts `.json`, with JSONC preferred. The plugin does not create configuration files.
+Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `~/.config/opencode/dcp.jsonc`), `$OPENCODE_CONFIG_DIR/dcp.jsonc`, then the nearest project `.opencode` directory containing a DCP configuration file. Each also accepts `.json`, with JSONC preferred. Directories without a DCP file are skipped during the upward search; only the nearest project layer is used, without merging more distant ancestors. The plugin does not create configuration files.
 
 ```jsonc
 {
@@ -52,7 +52,7 @@ Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `
 }
 ```
 
-`protectRecentSteps` is a positive integer; `protectRecentTokens` is nonnegative; `targetRatio` is in `(0, 1]`; `minimumSavingsTokens` is a positive integer. `protectedTools` adds protections without disabling built-in ones. Invalid JSONC rejects the entire layer; invalid fields retain previous valid values. `autoUpdate` only notifies. Debug logs contain operational metadata, not conversation dumps.
+`protectRecentSteps` is a positive integer; `protectRecentTokens` is a nonnegative integer; `targetRatio` is in `(0, 1]`; `minimumSavingsTokens` is a positive integer. All three integer settings must be at most JavaScript's maximum safe integer, `9007199254740991`. Every `protectedTools` name must contain a non-whitespace character; these tools add protections without disabling built-in ones. Invalid JSONC rejects the entire layer; invalid or out-of-range fields retain previous valid values. `autoUpdate` only notifies. Debug logs contain operational metadata, not conversation dumps.
 
 ## Migrating to v6
 
