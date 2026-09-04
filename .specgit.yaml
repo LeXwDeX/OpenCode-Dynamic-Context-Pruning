@@ -1,8 +1,7 @@
 version: 1
 delivery: audit-correctness
 context:
-  kind: worktree
-  label: opencode-dynamic-context-pruning
+  kind: branch
   branch: feat/41-audit-correctness
 issues:
   - 41
