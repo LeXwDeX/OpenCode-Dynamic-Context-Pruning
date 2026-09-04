@@ -11,3 +11,4 @@ issueKinds:
     kind: kind::fix
   - issue: 39
     kind: kind::test
+pr: 40
