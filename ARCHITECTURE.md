@@ -76,6 +76,41 @@ Additional scenarios retain the host's automatic compaction/pruning defaults and
 
 This is a pinned host contract test, not a claim that every future host or model provider has been exercised. CI also typechecks/builds/imports against the minimum and latest V1 plugin/SDK versions. The required `opencode-compatibility` aggregate includes the real-host job; SpecGit policy is unchanged.
 
+### Hard input limits and parallel settlement
+
+`tests/host/hard-limit.mjs` enforces an actual HTTP input limit before emitting any model response or advancing the tool plan. Its deterministic accounting is `ceil(UTF-8 bytes of JSON({messages, tools}) / 4)`, with a 60,000-unit cap on ordinary requests, titles and summaries alike. The advertised model has a 64,000 context window and 4,000 output allowance. This exercises provider rejection and host recovery; it does not certify a production tokenizer.
+
+The ordinary-read control completes with DCP folding and no rejection. The same workload reading protected `CONTEXT.md` files receives real HTTP 400 `context_length_exceeded` responses, enters native compaction and resumes. Both cases verify each stored tool result and a single ledger append that must not replay. A third case exceeds the cap even during summarization; it must persist `ContextOverflowError`, finish with an error and become idle. A scripted provider controls subsequent calls, so these assertions establish host execution behavior, not a real model's ability to reconstruct task intent after lossy summarization.
+
+`tests/host/parallel-tools.mjs` emits multiple tool calls in one model response. Its scenarios cover two successes, a missing-file error alongside a nonzero shell exit and a slow success, automatic compaction after all parallel tools settle, and explicit cancellation of two running siblings after another sibling has succeeded. Assertions inspect actual running snapshots, each call's terminal status and exit code, input/result pairing, stored original output, whole-step recent protection and terminal idle state. Final host timestamps can be rewritten on settlement; observed running snapshots establish execution overlap. The pressure scenario uses Native LLM and short outputs to check full summary fidelity without confusing the host's native per-output summary truncation with DCP clearing. The other scenarios use AI SDK. Native LLM buffers results until the full batch settles, so the cancellation test does not establish preservation of early completed siblings in that mode.
+
+### Published-host evidence
+
+The pinned source revision above is a development contract. It differs from the [GraphAgent 1.0.39 release](https://github.com/LeXwDeX/OpenCode-GraphAgent/releases/tag/graphagent-v1.0.39), whose target is `953ca98999eb1120fe9bf99a32178ea709b4dc2d`. SDK types are a separate compatibility dimension from either runtime.
+
+On 2026-09-04, the official `opencode-darwin-arm64.zip` was downloaded and its SHA-256 matched the release API digest and `SHA256SUMS`: `3a5b1ae23ee1c78f89976985dcc74d751123a8ebdad8af33bf4c0795c485c8e0`. The extracted executable reported `1.0.39` and had SHA-256 `841648e219e86ec9f806037311dfbc2d78fe49e67ceef67b3501eb5ffeccfcbe`. The matrix loads the current built DCP plugin with the npm development peer recorded in its report, without importing the pinned host's source modules.
+
+| Released artifact mode | DCP      | Slow tool during automatic compaction              | Explicit cancellation |
+| ---------------------- | -------- | -------------------------------------------------- | --------------------- |
+| Native LLM             | enabled  | Failed: settled with null exit and an abort result | Passed                |
+| Native LLM             | disabled | Failed: settled with null exit and an abort result | Passed                |
+| AI SDK                 | enabled  | Passed: successful shell exit                      | Passed                |
+| AI SDK                 | disabled | Passed: successful shell exit                      | Passed                |
+
+Native LLM on this artifact is unsupported for reliable slow-tool settlement under automatic compaction. A `completed` tool status alone is insufficient: a null exit and an abort result are not success. The DCP-off control demonstrates that disabling the plugin does not resolve this observed lifecycle failure. This evidence is scoped to that artifact, platform and scenario; it neither patches the host nor establishes compatibility with other releases or providers.
+
+Reproduce against an explicitly selected artifact whose release provenance has been checked:
+
+```sh
+npm run test:host:binary -- \
+  --binary /absolute/path/to/release/opencode \
+  --version 1.0.39 \
+  --sha256 841648e219e86ec9f806037311dfbc2d78fe49e67ceef67b3501eb5ffeccfcbe \
+  --output /absolute/path/to/disposable/evidence
+```
+
+The Node runner validates the executable identity, builds DCP, and launches four isolated Bun/binary workers with fresh configuration and databases. It records the plugin build digest, npm peer version, runtime flags, public API history, model requests and each independent check. It continues through explicit cancellation and the other modes even if slow-tool settlement fails. Any failed case makes the command exit nonzero; known failures remain failures in the JSON report. This optional release matrix complements the required pinned-source CI gate and never replaces or relaxes it.
+
 ## Delivery and publication
 
 The v6 changes are tracked by issues #34, #35 and #36. Historical audits describe earlier versions; they are not the current architecture contract.

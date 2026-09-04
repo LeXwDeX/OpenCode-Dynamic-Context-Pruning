@@ -42,6 +42,8 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 
 需要支持 V1 插件接口的 OpenCode，插件 peer 范围为 `>=1.4.3 <2`。类型兼容矩阵检查最低版和最新 V1 版本；运行时契约另有固定真实宿主版本验证，详见[架构与验证](./ARCHITECTURE.md)。不带显式会话身份或模型信息的消息形状不会被猜测或压缩。
 
+GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动压缩可能中断仍在运行的工具；DCP 开启和关闭时都可复现。该组合尚不支持需要可靠慢工具结算的任务。相同制品的 AI SDK 模式通过了本次慢工具与显式取消对照。固定开发源码通过测试不能替代已发布制品的运行证据，完整范围和复现入口见[宿主验证](./ARCHITECTURE.md#published-host-evidence)。
+
 ## 配置
 
 按以下顺序覆盖：全局 `$XDG_CONFIG_HOME/opencode/dcp.jsonc`（默认 `~/.config/opencode/dcp.jsonc`）→ `$OPENCODE_CONFIG_DIR/dcp.jsonc` → 项目最近一级包含 DCP 配置文件的 `.opencode` 目录。同目录支持 `.json`，优先 `.jsonc`。没有 DCP 配置文件的目录会继续向上查找；找到后只使用最近一级，不再合并更上层的项目配置。插件不自动创建配置文件。
