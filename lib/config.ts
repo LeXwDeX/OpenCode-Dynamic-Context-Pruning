@@ -1,20 +1,11 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs"
-import { join, dirname } from "path"
-import { homedir } from "os"
-import * as jsoncParser from "jsonc-parser"
+import { existsSync, readFileSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { homedir } from "node:os"
 import type { PluginInput } from "@opencode-ai/plugin"
+import * as jsoncParser from "jsonc-parser"
 import { DTC_DEFAULTS, type DtcConfig } from "./dtc/engine"
 
-export interface Commands {
-    enabled: boolean
-}
-
-/** DTC engine knobs plus the master switch for request-time compression. */
 export interface DtcPluginConfig extends DtcConfig {
-    enabled: boolean
-}
-
-export interface ToolConfig {
     enabled: boolean
 }
 
@@ -22,516 +13,206 @@ export interface PluginConfig {
     enabled: boolean
     autoUpdate: boolean
     debug: boolean
-    commands: Commands
     dtc: DtcPluginConfig
-    tool: ToolConfig
+    tool: { enabled: boolean }
 }
 
-export const DEFAULT_DTC: DtcPluginConfig = {
-    enabled: true,
-    ...DTC_DEFAULTS,
+export const DEFAULT_DTC: DtcPluginConfig = { enabled: true, ...DTC_DEFAULTS }
+
+type RecordValue = Record<string, unknown>
+type Rule = { expected: string; accepts: (value: unknown) => boolean }
+const boolean: Rule = { expected: "boolean", accepts: (value) => typeof value === "boolean" }
+const integer = (minimum: number): Rule => ({
+    expected: `integer >= ${minimum}`,
+    accepts: (value) =>
+        typeof value === "number" && Number.isSafeInteger(value) && value >= minimum,
+})
+const rules: Record<string, Rule> = {
+    enabled: boolean,
+    autoUpdate: boolean,
+    debug: boolean,
+    "dtc.enabled": boolean,
+    "dtc.protectRecentSteps": integer(1),
+    "dtc.protectRecentTokens": integer(0),
+    "dtc.targetRatio": {
+        expected: "number in (0, 1]",
+        accepts: (value) =>
+            typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 1,
+    },
+    "dtc.minimumSavingsTokens": integer(1),
+    "dtc.protectedTools": {
+        expected: "array of nonempty tool names",
+        accepts: (value) =>
+            Array.isArray(value) &&
+            value.every((item) => typeof item === "string" && item.trim().length > 0),
+    },
+    "tool.enabled": boolean,
 }
 
-export const VALID_CONFIG_KEYS = new Set([
-    "$schema",
-    "enabled",
-    "autoUpdate",
-    "debug",
-    "commands",
-    "commands.enabled",
-    "dtc",
-    "dtc.enabled",
-    "dtc.tailTurns",
-    "dtc.lowWatermarkRatio",
-    "dtc.targetRatio",
-    "dtc.driftThreshold",
-    "dtc.toolOutputKeepChars",
-    "dtc.mergeRuns",
-    "tool",
-    "tool.enabled",
-])
+export const VALID_CONFIG_KEYS = new Set(["$schema", "dtc", "tool", ...Object.keys(rules)])
 
-// Keys that only existed in earlier plugin-owned compression architectures.
-// They are recognized so users get a migration hint instead of an "unknown
-// key" warning; their values are dropped. autoPrune.* is superseded by the
-// always-on request-time DTC engine; driftThreshold migrates to dtc.*.
+/** Migration diagnostics only: no legacy behavior is retained. */
 export const DEPRECATED_CONFIG_KEYS = new Set([
+    "commands",
     "compress",
-    "compress.mode",
-    "compress.permission",
-    "compress.showCompression",
-    "compress.summaryBuffer",
-    "compress.maxContextLimit",
-    "compress.minContextLimit",
-    "compress.boundaryNudge",
-    "compress.modelMaxLimits",
-    "compress.modelMinLimits",
-    "compress.nudgeFrequency",
-    "compress.iterationNudgeThreshold",
-    "compress.nudgeForce",
-    "compress.protectedTools",
-    "compress.protectTags",
-    "compress.protectUserMessages",
-    "compress.externalModel",
-    "compress.externalModel.url",
-    "compress.externalModel.model",
-    "compress.externalModel.apiKey",
-    "compress.externalModel.timeout",
-    "compress.externalModel.retries",
     "manualMode",
-    "manualMode.enabled",
-    "manualMode.automaticStrategies",
     "strategies",
-    "strategies.deduplication",
-    "strategies.deduplication.enabled",
-    "strategies.deduplication.protectedTools",
-    "strategies.purgeErrors",
-    "strategies.purgeErrors.enabled",
-    "strategies.purgeErrors.turns",
-    "strategies.purgeErrors.protectedTools",
     "turnProtection",
-    "turnProtection.enabled",
-    "turnProtection.turns",
     "pruneNotification",
     "pruneNotificationType",
     "protectedFilePatterns",
-    "commands.protectedTools",
-    "experimental.allowSubAgents",
-    "language",
     "experimental",
-    "experimental.customPrompts",
+    "language",
     "summarize",
-    "summarize.failureCooldownMs",
     "autoPrune",
-    "autoPrune.enabled",
-    "autoPrune.signals",
-    "autoPrune.signals.topicDrift",
-    "autoPrune.signals.volume",
-    "autoPrune.signals.idleGap",
-    "autoPrune.autoContinue",
-    "autoPrune.minMessages",
-    "autoPrune.volumeThreshold",
-    "autoPrune.driftThreshold",
-    "autoPrune.idleGapMs",
-    "autoPrune.cooldownMs",
+    "dtc.tailTurns",
+    "dtc.lowWatermarkRatio",
+    "dtc.driftThreshold",
+    "dtc.toolOutputKeepChars",
+    "dtc.mergeRuns",
 ])
 
-function getConfigKeyPaths(obj: Record<string, any>, prefix = ""): string[] {
-    const keys: string[] = []
-    for (const key of Object.keys(obj)) {
-        const fullKey = prefix ? `${prefix}.${key}` : key
-        keys.push(fullKey)
-
-        if (obj[key] && typeof obj[key] === "object" && !Array.isArray(obj[key])) {
-            keys.push(...getConfigKeyPaths(obj[key], fullKey))
-        }
-    }
-    return keys
+function record(value: unknown): value is RecordValue {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
-export function getDeprecatedConfigKeys(userConfig: Record<string, any>): string[] {
-    return getConfigKeyPaths(userConfig).filter((key) => DEPRECATED_CONFIG_KEYS.has(key))
+function keyPaths(value: RecordValue, prefix = ""): string[] {
+    return Object.entries(value).flatMap(([key, child]) => {
+        const path = prefix ? `${prefix}.${key}` : key
+        return [path, ...(record(child) ? keyPaths(child, path) : [])]
+    })
 }
 
-export function getInvalidConfigKeys(userConfig: Record<string, any>): string[] {
-    return getConfigKeyPaths(userConfig).filter(
-        (key) => !VALID_CONFIG_KEYS.has(key) && !DEPRECATED_CONFIG_KEYS.has(key),
+function retired(key: string): boolean {
+    return [...DEPRECATED_CONFIG_KEYS].some(
+        (prefix) => key === prefix || key.startsWith(prefix + "."),
     )
 }
 
-interface ValidationError {
-    key: string
-    expected: string
-    actual: string
+export function getDeprecatedConfigKeys(config: RecordValue): string[] {
+    return keyPaths(config).filter(retired)
 }
 
-export function validateConfigTypes(config: Record<string, any>): ValidationError[] {
-    const errors: ValidationError[] = []
+export function getInvalidConfigKeys(config: RecordValue): string[] {
+    return keyPaths(config).filter((key) => !VALID_CONFIG_KEYS.has(key) && !retired(key))
+}
 
-    if (config.enabled !== undefined && typeof config.enabled !== "boolean") {
-        errors.push({ key: "enabled", expected: "boolean", actual: typeof config.enabled })
+function valueAt(config: RecordValue, key: string): unknown {
+    const [section, field] = key.split(".")
+    const value = config[section!]
+    return field ? (record(value) ? value[field] : undefined) : value
+}
+
+export function validateConfigTypes(
+    config: RecordValue,
+): Array<{ key: string; expected: string; actual: string }> {
+    const errors: Array<{ key: string; expected: string; actual: string }> = []
+    for (const key of ["dtc", "tool"]) {
+        if (config[key] !== undefined && !record(config[key])) {
+            errors.push({ key, expected: "object", actual: typeof config[key] })
+        }
     }
-
-    if (config.autoUpdate !== undefined && typeof config.autoUpdate !== "boolean") {
-        errors.push({ key: "autoUpdate", expected: "boolean", actual: typeof config.autoUpdate })
-    }
-
-    if (config.debug !== undefined && typeof config.debug !== "boolean") {
-        errors.push({ key: "debug", expected: "boolean", actual: typeof config.debug })
-    }
-
-    const commands = config.commands
-    if (commands !== undefined) {
-        if (typeof commands !== "object" || commands === null || Array.isArray(commands)) {
-            errors.push({ key: "commands", expected: "object", actual: typeof commands })
-        } else if (commands.enabled !== undefined && typeof commands.enabled !== "boolean") {
+    for (const [key, rule] of Object.entries(rules)) {
+        const value = valueAt(config, key)
+        if (value !== undefined && !rule.accepts(value)) {
             errors.push({
-                key: "commands.enabled",
-                expected: "boolean",
-                actual: typeof commands.enabled,
+                key,
+                expected: rule.expected,
+                actual: Array.isArray(value) ? "array" : typeof value,
             })
         }
     }
-
-    const dtc = config.dtc
-    if (dtc !== undefined) {
-        if (typeof dtc !== "object" || dtc === null || Array.isArray(dtc)) {
-            errors.push({ key: "dtc", expected: "object", actual: typeof dtc })
-        } else {
-            if (dtc.enabled !== undefined && typeof dtc.enabled !== "boolean") {
-                errors.push({ key: "dtc.enabled", expected: "boolean", actual: typeof dtc.enabled })
-            }
-            if (dtc.mergeRuns !== undefined && typeof dtc.mergeRuns !== "boolean") {
-                errors.push({
-                    key: "dtc.mergeRuns",
-                    expected: "boolean",
-                    actual: typeof dtc.mergeRuns,
-                })
-            }
-            const numericKeys: Array<[string, number, number]> = [
-                ["tailTurns", 0, Number.POSITIVE_INFINITY],
-                ["lowWatermarkRatio", 0, 1],
-                ["targetRatio", 0, 1],
-                ["driftThreshold", 0, 1],
-                ["toolOutputKeepChars", 200, Number.POSITIVE_INFINITY],
-            ]
-            for (const [key, min, max] of numericKeys) {
-                const value = (dtc as Record<string, any>)[key]
-                if (
-                    value !== undefined &&
-                    (typeof value !== "number" ||
-                        !Number.isFinite(value) ||
-                        value < min ||
-                        value > max)
-                ) {
-                    errors.push({
-                        key: `dtc.${key}`,
-                        expected: `number in [${min}, ${max === Number.POSITIVE_INFINITY ? "∞" : max}]`,
-                        actual: JSON.stringify(value),
-                    })
-                }
-            }
-        }
-    }
-
-    const tool = config.tool
-    if (tool !== undefined) {
-        if (typeof tool !== "object" || tool === null || Array.isArray(tool)) {
-            errors.push({ key: "tool", expected: "object", actual: typeof tool })
-        } else if (tool.enabled !== undefined && typeof tool.enabled !== "boolean") {
-            errors.push({ key: "tool.enabled", expected: "boolean", actual: typeof tool.enabled })
-        }
-    }
-
     return errors
 }
 
-/** Legacy autoPrune.driftThreshold migrates to dtc.driftThreshold. */
-export function legacyDriftThreshold(configData: Record<string, any>): number | undefined {
-    const autoPrune = configData.autoPrune
-    if (autoPrune === null || typeof autoPrune !== "object" || Array.isArray(autoPrune)) {
-        return undefined
-    }
-    const value = (autoPrune as Record<string, any>).driftThreshold
-    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
-        ? value
-        : undefined
-}
-
-function showConfigWarnings(
-    ctx: PluginInput,
-    configPath: string,
-    configData: Record<string, any>,
-    isProject: boolean,
-): void {
-    const invalidKeys = getInvalidConfigKeys(configData)
-    const deprecatedKeys = getDeprecatedConfigKeys(configData)
-    const typeErrors = validateConfigTypes(configData)
-
-    if (invalidKeys.length === 0 && deprecatedKeys.length === 0 && typeErrors.length === 0) {
-        return
-    }
-
-    const configType = isProject ? "project config" : "config"
-    const messages: string[] = []
-
-    if (deprecatedKeys.length > 0) {
-        const keyList = deprecatedKeys.slice(0, 3).join(", ")
-        const suffix = deprecatedKeys.length > 3 ? ` (+${deprecatedKeys.length - 3} more)` : ""
-        messages.push(
-            `Removed legacy keys are ignored: ${keyList}${suffix}. Compression now runs as dynamic request-time folding (dtc.*).`,
-        )
-    }
-
-    if (invalidKeys.length > 0) {
-        const keyList = invalidKeys.slice(0, 3).join(", ")
-        const suffix = invalidKeys.length > 3 ? ` (+${invalidKeys.length - 3} more)` : ""
-        messages.push(`Unknown keys: ${keyList}${suffix}`)
-    }
-
-    if (typeErrors.length > 0) {
-        for (const err of typeErrors.slice(0, 2)) {
-            messages.push(`${err.key}: expected ${err.expected}, got ${err.actual}`)
-        }
-        if (typeErrors.length > 2) {
-            messages.push(`(+${typeErrors.length - 2} more type errors)`)
-        }
-    }
-
-    setTimeout(() => {
-        try {
-            ctx.client.tui.showToast({
-                body: {
-                    title: `DCP: ${configType} warning`,
-                    message: `${configPath}\n${messages.join("\n")}`,
-                    variant: "warning",
-                    duration: 7000,
-                },
-            })
-        } catch {}
-    }, 7000)
-}
-
-const defaultConfig: PluginConfig = {
-    enabled: true,
-    autoUpdate: true,
-    debug: false,
-    commands: {
+function defaults(): PluginConfig {
+    return {
         enabled: true,
-    },
-    dtc: { ...DEFAULT_DTC },
-    tool: {
-        enabled: true,
-    },
+        autoUpdate: true,
+        debug: false,
+        dtc: { ...DEFAULT_DTC, protectedTools: [...DTC_DEFAULTS.protectedTools] },
+        tool: { enabled: true },
+    }
 }
 
-const GLOBAL_CONFIG_DIR = process.env.XDG_CONFIG_HOME
-    ? join(process.env.XDG_CONFIG_HOME, "opencode")
-    : join(homedir(), ".config", "opencode")
-const GLOBAL_CONFIG_PATH_JSONC = join(GLOBAL_CONFIG_DIR, "dcp.jsonc")
-const GLOBAL_CONFIG_PATH_JSON = join(GLOBAL_CONFIG_DIR, "dcp.json")
+function merge(base: PluginConfig, layer: RecordValue): void {
+    for (const [key, rule] of Object.entries(rules)) {
+        const value = valueAt(layer, key)
+        if (value === undefined || !rule.accepts(value)) continue
+        const [section, field] = key.split(".")
+        // Writes are restricted to the validated, fixed rules above.
+        const target = field
+            ? (base[section as "dtc" | "tool"] as unknown as RecordValue)
+            : (base as unknown as RecordValue)
+        target[field ?? section!] = Array.isArray(value)
+            ? [...new Set(value.map((item: string) => item.trim()))]
+            : value
+    }
+}
 
-function findOpencodeDir(startDir: string): string | null {
-    let current = startDir
-    while (current !== "/") {
+function configFile(directory: string): string | undefined {
+    return ["dcp.jsonc", "dcp.json"].map((name) => join(directory, name)).find(existsSync)
+}
+
+function projectConfig(directory: string): string | undefined {
+    for (let current = directory; ; current = dirname(current)) {
         const candidate = join(current, ".opencode")
-        if (existsSync(candidate) && statSync(candidate).isDirectory()) {
-            return candidate
-        }
-        const parent = dirname(current)
-        if (parent === current) {
-            break
-        }
-        current = parent
+        if (existsSync(candidate) && statSync(candidate).isDirectory()) return configFile(candidate)
+        if (dirname(current) === current) return undefined
     }
-    return null
 }
 
-function getConfigPaths(ctx?: PluginInput): {
-    global: string | null
-    configDir: string | null
-    project: string | null
-} {
-    const global = existsSync(GLOBAL_CONFIG_PATH_JSONC)
-        ? GLOBAL_CONFIG_PATH_JSONC
-        : existsSync(GLOBAL_CONFIG_PATH_JSON)
-          ? GLOBAL_CONFIG_PATH_JSON
-          : null
-
-    let configDir: string | null = null
-    const opencodeConfigDir = process.env.OPENCODE_CONFIG_DIR
-    if (opencodeConfigDir) {
-        const configJsonc = join(opencodeConfigDir, "dcp.jsonc")
-        const configJson = join(opencodeConfigDir, "dcp.json")
-        configDir = existsSync(configJsonc)
-            ? configJsonc
-            : existsSync(configJson)
-              ? configJson
-              : null
-    }
-
-    let project: string | null = null
-    if (ctx?.directory) {
-        const opencodeDir = findOpencodeDir(ctx.directory)
-        if (opencodeDir) {
-            const projectJsonc = join(opencodeDir, "dcp.jsonc")
-            const projectJson = join(opencodeDir, "dcp.json")
-            project = existsSync(projectJsonc)
-                ? projectJsonc
-                : existsSync(projectJson)
-                  ? projectJson
-                  : null
-        }
-    }
-
-    return { global, configDir, project }
-}
-
-function createDefaultConfig(): void {
-    if (!existsSync(GLOBAL_CONFIG_DIR)) {
-        mkdirSync(GLOBAL_CONFIG_DIR, { recursive: true })
-    }
-
-    const configContent = `{
-  "$schema": "https://raw.githubusercontent.com/LeXwDeX/opencode-dynamic-context-pruning/master/dcp.schema.json"
-}
-`
-    writeFileSync(GLOBAL_CONFIG_PATH_JSONC, configContent, "utf-8")
-}
-
-interface ConfigLoadResult {
-    data: Record<string, any> | null
-    parseError?: string
-}
-
-function loadConfigFile(configPath: string): ConfigLoadResult {
-    let fileContent = ""
+function warn(ctx: PluginInput, message: string): void {
+    // Diagnostics never delay plugin initialization or create unhandled rejections.
     try {
-        fileContent = readFileSync(configPath, "utf-8")
-    } catch {
-        return { data: null }
-    }
-
-    try {
-        const parsed = jsoncParser.parse(fileContent, undefined, { allowTrailingComma: true })
-        if (parsed === undefined || parsed === null) {
-            return { data: null, parseError: "Config file is empty or invalid" }
-        }
-        return { data: parsed }
-    } catch (error: any) {
-        return { data: null, parseError: error.message || "Failed to parse config" }
-    }
-}
-
-function mergeCommands(
-    base: PluginConfig["commands"],
-    override?: Partial<PluginConfig["commands"]>,
-): PluginConfig["commands"] {
-    if (!override) {
-        return base
-    }
-
-    return {
-        enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
-    }
-}
-
-function mergeDtc(
-    base: DtcPluginConfig,
-    override?: Record<string, any>,
-    legacyDrift?: number,
-): DtcPluginConfig {
-    const driftFallback = legacyDrift ?? base.driftThreshold
-    if (!override || typeof override !== "object" || Array.isArray(override)) {
-        return { ...base, driftThreshold: driftFallback }
-    }
-
-    const number = (key: keyof DtcConfig, min: number, max: number): number =>
-        typeof override[key] === "number" &&
-        Number.isFinite(override[key]) &&
-        override[key] >= min &&
-        override[key] <= max
-            ? override[key]
-            : (base[key] as number)
-
-    return {
-        enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
-        tailTurns: number("tailTurns", 0, Number.POSITIVE_INFINITY),
-        lowWatermarkRatio: number("lowWatermarkRatio", 0, 1),
-        targetRatio: number("targetRatio", 0, 1),
-        driftThreshold:
-            typeof override.driftThreshold === "number" &&
-            Number.isFinite(override.driftThreshold) &&
-            override.driftThreshold >= 0 &&
-            override.driftThreshold <= 1
-                ? override.driftThreshold
-                : driftFallback,
-        toolOutputKeepChars: number("toolOutputKeepChars", 200, Number.POSITIVE_INFINITY),
-        mergeRuns: typeof override.mergeRuns === "boolean" ? override.mergeRuns : base.mergeRuns,
-    }
-}
-
-function mergeTool(base: ToolConfig, override?: Partial<ToolConfig>): ToolConfig {
-    if (!override) {
-        return base
-    }
-
-    return {
-        enabled: typeof override.enabled === "boolean" ? override.enabled : base.enabled,
-    }
-}
-
-function deepCloneConfig(config: PluginConfig): PluginConfig {
-    return {
-        ...config,
-        commands: { ...config.commands },
-        dtc: { ...config.dtc },
-        tool: { ...config.tool },
-    }
-}
-
-function mergeLayer(config: PluginConfig, data: Record<string, any>): PluginConfig {
-    return {
-        enabled: typeof data.enabled === "boolean" ? data.enabled : config.enabled,
-        autoUpdate: typeof data.autoUpdate === "boolean" ? data.autoUpdate : config.autoUpdate,
-        debug: typeof data.debug === "boolean" ? data.debug : config.debug,
-        commands: mergeCommands(config.commands, data.commands),
-        dtc: mergeDtc(config.dtc, data.dtc, legacyDriftThreshold(data)),
-        tool: mergeTool(config.tool, data.tool),
-    }
-}
-
-function scheduleParseWarning(ctx: PluginInput, title: string, message: string): void {
-    setTimeout(() => {
-        try {
+        void Promise.resolve(
             ctx.client.tui.showToast({
-                body: {
-                    title,
-                    message,
-                    variant: "warning",
-                    duration: 7000,
-                },
-            })
-        } catch {}
-    }, 7000)
+                body: { title: "DCP configuration", message, variant: "warning", duration: 7000 },
+            }),
+        ).catch(() => undefined)
+    } catch {}
 }
 
 export function getConfig(ctx: PluginInput): PluginConfig {
-    let config = deepCloneConfig(defaultConfig)
-    const configPaths = getConfigPaths(ctx)
-
-    if (!configPaths.global) {
-        createDefaultConfig()
-    }
-
-    const layers: Array<{ path: string | null; name: string; isProject: boolean }> = [
-        { path: configPaths.global, name: "config", isProject: false },
-        { path: configPaths.configDir, name: "configDir config", isProject: true },
-        { path: configPaths.project, name: "project config", isProject: true },
+    const config = defaults()
+    const globalDirectory = join(
+        process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+        "opencode",
+    )
+    const paths = [
+        configFile(globalDirectory),
+        process.env.OPENCODE_CONFIG_DIR ? configFile(process.env.OPENCODE_CONFIG_DIR) : undefined,
+        projectConfig(ctx.directory),
     ]
-
-    for (const layer of layers) {
-        if (!layer.path) {
-            continue
+    for (const path of new Set(paths)) {
+        if (!path) continue
+        try {
+            const errors: jsoncParser.ParseError[] = []
+            const data: unknown = jsoncParser.parse(readFileSync(path, "utf8"), errors, {
+                allowTrailingComma: true,
+            })
+            if (errors.length || !record(data)) {
+                warn(ctx, `${path}: invalid JSONC object; this layer was ignored.`)
+                continue
+            }
+            const deprecated = getDeprecatedConfigKeys(data)
+            const invalid = getInvalidConfigKeys(data)
+            const types = validateConfigTypes(data)
+            const notices: string[] = []
+            if (deprecated.length)
+                notices.push(
+                    `Retired options ignored: ${deprecated.join(", ")}. See the v6 migration guide; manual folding uses dcp_prune.`,
+                )
+            if (invalid.length) notices.push(`Unknown options ignored: ${invalid.join(", ")}.`)
+            if (types.length)
+                notices.push(
+                    `Invalid values ignored: ${types.map(({ key, expected }) => `${key} (${expected})`).join(", ")}.`,
+                )
+            if (notices.length) warn(ctx, `${path}\n${notices.join("\n")}`)
+            merge(config, data)
+        } catch {
+            warn(ctx, `${path}: unable to read configuration; this layer was ignored.`)
         }
-
-        const result = loadConfigFile(layer.path)
-        if (result.parseError) {
-            scheduleParseWarning(
-                ctx,
-                `DCP: Invalid ${layer.name}`,
-                `${layer.path}\n${result.parseError}\nUsing previous/default values`,
-            )
-            continue
-        }
-
-        if (!result.data) {
-            continue
-        }
-
-        showConfigWarnings(ctx, layer.path, result.data, layer.isProject)
-        config = mergeLayer(config, result.data)
     }
-
     return config
 }

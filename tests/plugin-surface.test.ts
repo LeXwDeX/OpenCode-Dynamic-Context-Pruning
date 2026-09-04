@@ -7,188 +7,67 @@ import test from "node:test"
 const configHome = mkdtempSync(join(tmpdir(), "opencode-dcp-surface-config-"))
 process.env.XDG_CONFIG_HOME = configHome
 mkdirSync(join(configHome, "opencode"), { recursive: true })
-writeFileSync(
-    join(configHome, "opencode", "dcp.jsonc"),
-    JSON.stringify({ enabled: true, autoUpdate: false }),
-    "utf-8",
-)
+const configPath = join(configHome, "opencode", "dcp.jsonc")
+writeFileSync(configPath, JSON.stringify({ enabled: true, autoUpdate: false }))
 
-function buildCtx() {
-    return {
-        directory: mkdtempSync(join(tmpdir(), "opencode-dcp-surface-")),
-        client: {
-            session: {
-                get: async () => ({ data: {} }),
-                messages: async () => ({ data: [] }),
-            },
-            tui: { showToast: async () => {} },
-        },
-    } as any
-}
-
-async function loadPlugin() {
+async function loadPlugin(config: Record<string, unknown> = {}) {
+    writeFileSync(configPath, JSON.stringify({ enabled: true, autoUpdate: false, ...config }))
     const { default: server } = await import("../index")
-    return server(buildCtx())
+    // No mutable session API, config writer, or provider lookup is available at
+    // initialization. Provider resolution belongs to the actual transform call.
+    return server({
+        directory: mkdtempSync(join(tmpdir(), "opencode-dcp-surface-")),
+        client: {},
+    } as any)
 }
 
-async function withConfig(config: Record<string, unknown>, run: () => Promise<void>) {
-    writeFileSync(join(configHome, "opencode", "dcp.jsonc"), JSON.stringify(config), "utf-8")
-    try {
-        await run()
-    } finally {
-        writeFileSync(
-            join(configHome, "opencode", "dcp.jsonc"),
-            JSON.stringify({ enabled: true, autoUpdate: false }),
-            "utf-8",
-        )
-    }
-}
-
-test("plugin registers the DTC transform and its chat.params feed by default", async () => {
+test("the default surface contains only request projection, fidelity guard, cleanup and tool", async () => {
     const hooks = await loadPlugin()
+    assert.deepEqual(Object.keys(hooks).sort(), [
+        "chat.params",
+        "event",
+        "experimental.chat.messages.transform",
+        "experimental.session.compacting",
+        "tool",
+    ])
+    assert.deepEqual(Object.keys(hooks.tool ?? {}), ["dcp_prune"])
+})
+
+test("disabling DTC removes its controls instead of exposing a tool that cannot work", async () => {
+    assert.deepEqual(await loadPlugin({ dtc: { enabled: false } }), {})
+    assert.deepEqual(await loadPlugin({ enabled: false }), {})
+})
+
+test("the tool can be disabled while automatic request projection remains enabled", async () => {
+    const hooks = await loadPlugin({ tool: { enabled: false } })
+    assert.equal(hooks.tool, undefined)
     assert.equal(typeof hooks["experimental.chat.messages.transform"], "function")
-    assert.equal(typeof hooks["chat.params"], "function")
 })
 
-test("plugin registers the compacting hook only as the native-compaction fidelity guard", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(typeof hooks["experimental.session.compacting"], "function")
-})
-
-test("plugin registers the lifecycle event handler and the dcp_prune tool by default", async () => {
-    const hooks = await loadPlugin()
-    assert.equal(typeof hooks.event, "function")
-    const definition = hooks.tool?.dcp_prune as
-        | { description: string; args: Record<string, unknown> }
-        | undefined
-    assert.ok(definition, "dcp_prune tool should be registered")
-    assert.match(definition.description, /话题.*变更/)
-    assert.equal(Object.keys(definition.args).length, 0)
-})
-
-test("disabling dtc removes every compaction-adjacent hook (host runs fully native)", async () => {
-    await withConfig({ enabled: true, autoUpdate: false, dtc: { enabled: false } }, async () => {
-        const hooks = await loadPlugin()
-        assert.equal(hooks["experimental.chat.messages.transform"], undefined)
-        assert.equal(hooks["chat.params"], undefined)
-        assert.equal(hooks["experimental.session.compacting"], undefined)
-        assert.ok(hooks.tool?.dcp_prune)
-    })
-})
-
-test("autoPrune and tool can be disabled independently via config", async () => {
-    await withConfig({ enabled: true, autoUpdate: false, tool: { enabled: false } }, async () => {
-        const hooks = await loadPlugin()
-        assert.equal(hooks.tool, undefined)
-        assert.equal(typeof hooks["experimental.chat.messages.transform"], "function")
-        assert.equal(typeof hooks["experimental.session.compacting"], "function")
-    })
-})
-
-test("plugin registers no system prompt or text.complete hooks", async () => {
-    const hooks = await loadPlugin()
+test("commands and all host compaction configuration are untouched", async () => {
+    const hooks = await loadPlugin({ commands: { enabled: true } })
+    assert.equal(hooks.config, undefined)
+    assert.equal(hooks["command.execute.before"], undefined)
     assert.equal(hooks["experimental.chat.system.transform"], undefined)
     assert.equal(hooks["experimental.text.complete"], undefined)
 })
 
-test("config hook never registers compress permissions or primary tools", async () => {
+test("the native summary prompt, params output and lifecycle remain unmodified", async () => {
     const hooks = await loadPlugin()
-    assert.equal(typeof hooks.config, "function")
-
-    const opencodeConfig: any = {}
-    await hooks.config!(opencodeConfig)
-
-    assert.equal(opencodeConfig.permission?.compress, undefined)
-    const primaryTools = opencodeConfig.experimental?.primary_tools ?? []
-    assert.equal(primaryTools.includes("compress"), false)
-})
-
-test("config hook still registers the /dcp command when commands are enabled", async () => {
-    const hooks = await loadPlugin()
-
-    const opencodeConfig: any = {}
-    await hooks.config!(opencodeConfig)
-
-    assert.ok(opencodeConfig.command?.dcp, "dcp command should stay registered")
-})
-
-test("config hook raises the host compaction tail protection to DCP defaults", async () => {
-    const hooks = await loadPlugin()
-
-    const opencodeConfig: any = {}
-    await hooks.config!(opencodeConfig)
-
-    assert.equal(opencodeConfig.compaction?.tail_turns, 4)
-    assert.equal(opencodeConfig.compaction?.preserve_recent_tokens, 32000)
-})
-
-test("config hook never overrides explicit host compaction settings", async () => {
-    const hooks = await loadPlugin()
-
-    const opencodeConfig: any = {
-        compaction: { tail_turns: 2, preserve_recent_tokens: 5000 },
-    }
-    await hooks.config!(opencodeConfig)
-
-    assert.equal(opencodeConfig.compaction.tail_turns, 2)
-    assert.equal(opencodeConfig.compaction.preserve_recent_tokens, 5000)
-})
-
-test("config hook stays registered (and skips the command) when commands are disabled", async () => {
-    await withConfig(
-        { enabled: true, autoUpdate: false, commands: { enabled: false } },
-        async () => {
-            const hooks = await loadPlugin()
-            assert.equal(typeof hooks.config, "function")
-            assert.equal(hooks["command.execute.before"], undefined)
-
-            const opencodeConfig: any = {}
-            await hooks.config!(opencodeConfig)
-
-            assert.equal(opencodeConfig.command, undefined)
-            assert.equal(opencodeConfig.compaction?.tail_turns, 4)
-        },
-    )
-})
-
-test("the plugin never exposes a summarize-based compression surface", async () => {
-    // v4 invariant: DCP does not call session.summarize anywhere. The client
-    // stub has no summarize method at all — if any code path reached for it,
-    // plugin load or a hook call would throw.
-    const hooks = await loadPlugin()
-    const output = { messages: [] as unknown[] }
-    await (hooks["experimental.chat.messages.transform"] as any)({}, output)
-    await (hooks["chat.params"] as any)({ sessionID: "ses_x", model: { limit: { context: 8000 } } })
+    const summary = { context: ["native"], prompt: "host-owned prompt" }
+    await hooks["experimental.session.compacting"]!({ sessionID: "ses_a" }, summary)
+    assert.deepEqual(summary, { context: ["native"], prompt: "host-owned prompt" })
+    await hooks["experimental.chat.messages.transform"]!({}, { messages: [] })
+    const params = { temperature: 0.5, topP: 0.9, topK: 50, maxOutputTokens: 8000, options: {} }
+    await (hooks["chat.params"] as any)({ sessionID: "ses_a", agent: "compaction" }, params)
+    assert.deepEqual(params, {
+        temperature: 0.5,
+        topP: 0.9,
+        topK: 50,
+        maxOutputTokens: 8000,
+        options: {},
+    })
     await (hooks.event as any)({
-        event: { type: "session.deleted", properties: { info: { id: "ses_x" } } },
+        event: { type: "session.deleted", properties: { info: { id: "ses_a" } } },
     })
-})
-
-test("config defaults expose the dtc block with tiered defaults", async () => {
-    const { DEFAULT_DTC } = await import("../lib/config")
-    assert.equal(DEFAULT_DTC.enabled, true)
-    assert.equal(DEFAULT_DTC.tailTurns, 4)
-    assert.equal(DEFAULT_DTC.lowWatermarkRatio, 0.5)
-    assert.equal(DEFAULT_DTC.targetRatio, 0.7)
-    assert.equal(DEFAULT_DTC.driftThreshold, 0.18)
-    assert.equal(DEFAULT_DTC.toolOutputKeepChars, 4000)
-})
-
-test("the chat.params feed learns the window and records fork correlation", async () => {
-    const { createChatParamsHandler } = await import("../lib/hooks")
-    const { DtcState } = await import("../lib/dtc/state")
-    const { fakeLogger } = await import("./fixtures")
-    const state = new DtcState()
-    const { logger } = fakeLogger()
-    const handler = createChatParamsHandler({ state, logger })
-    await handler({
-        sessionID: "ses_p",
-        model: { limit: { context: 123456 } },
-        message: { time: { created: 777 } },
-    })
-    assert.equal(state.contextTokens("ses_p"), 123456)
-    assert.equal(state.sessionByUserTime(777), "ses_p")
-    // Missing message or limit degrades gracefully: no throw, partial learning.
-    await handler({ sessionID: "ses_q" })
-    assert.equal(state.contextTokens("ses_q"), undefined)
 })

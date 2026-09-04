@@ -6,8 +6,8 @@
 
 对照对象：上游 `Opencode-DCP/opencode-dynamic-context-pruning@85b6f5c`（npm `3.1.14`）、OpenCode 当前 V1 插件/SDK 与 V2 迁移文档
 
-> 本文保留修复前的接口调查证据；对应缺陷的修复状态与最终门禁结果见仓库根目录
-> `DEFECT_AUDIT.md`。
+> **历史文档：** 本文的“当前”指 2026-08-01 的 3.4.x 审计，不代表 v6 的实现或验证结果。
+> 历史修复记录见根目录 `DEFECT_AUDIT.md`；现行架构与验证方式见 [ARCHITECTURE.md](../../ARCHITECTURE.md)。
 
 ## 结论
 

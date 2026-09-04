@@ -1,16 +1,12 @@
-/**
- * Loose structural types for session messages as delivered by the host's
- * `experimental.chat.messages.transform` hook. Deliberately duck-typed: the
- * engine only reads roles/part types and rewrites string payloads, so it
- * stays compatible across host versions without importing their schemas.
- */
-
+/** Host-owned message payloads. The projection only adds native compacted
+ * timestamps on successful tool states; all other fields survive unchanged. */
 export interface MessageInfoLike {
     id?: string
     role?: string
     sessionID?: string
     time?: { created?: number }
     summary?: boolean
+    [key: string]: unknown
 }
 
 export interface ToolStateLike {
@@ -20,11 +16,14 @@ export interface ToolStateLike {
     input?: Record<string, unknown>
     time?: { compacted?: number } & Record<string, unknown>
     metadata?: Record<string, unknown>
+    attachments?: unknown
+    [key: string]: unknown
 }
 
 export interface PartLike {
     type?: string
     id?: string
+    callID?: string
     text?: string
     tool?: string
     state?: ToolStateLike
@@ -34,12 +33,5 @@ export interface PartLike {
 export interface MessageLike {
     info?: MessageInfoLike
     parts?: PartLike[]
-}
-
-/** A turn = a user message plus everything up to the next user message. */
-export interface Turn {
-    /** Index of the user message that opens the turn. */
-    start: number
-    /** Exclusive end index in the message array. */
-    end: number
+    [key: string]: unknown
 }
