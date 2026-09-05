@@ -1,8 +1,7 @@
 version: 1
 delivery: context-pruning-design
 context:
-  kind: worktree
-  label: dcp-context-pruning-design
+  kind: branch
   branch: fix/58-context-pruning-design
 issues:
   - 58
