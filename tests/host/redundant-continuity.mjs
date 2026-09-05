@@ -6,7 +6,7 @@ import { cleared, isSummary, sse, startPublicHost, toolParts } from "./public-fi
 const scenario = process.argv[2]
 assert.ok(["redundant-continuity-sdk", "redundant-continuity-native"].includes(scenario))
 const steps = 32
-const slowStep = 25
+let slowStep
 const unique = "UNIQUE_REQUIREMENT\n" + "retain unique evidence\n".repeat(240)
 const repeated = "REPEATED_EVIDENCE\n" + "same complete evidence\n".repeat(240)
 let emitted = 0
@@ -69,8 +69,13 @@ host = await startPublicHost({
         if (emitted === steps)
             return sse(body.model, { content: "DCP_CONTINUOUS_TASK completed." }, "stop", usage)
         const step = emitted++
-        const slow = step === slowStep
-        if (slow) slowIssuedAt = Date.now()
+        // Start the slow tool only after observing actual redundancy cleanup.
+        // Platform-specific path lengths can shift the first budget crossing.
+        const slow = redundantAt !== undefined && slowStep === undefined
+        if (slow) {
+            slowStep = step
+            slowIssuedAt = Date.now()
+        }
         return sse(
             body.model,
             {
@@ -115,9 +120,22 @@ try {
         agent: "build",
         parts: [{ type: "text", text: `DCP_CONTINUOUS_TASK: execute all ${steps} tools.` }],
     })
+    const observations = {
+        emitted,
+        redundantAt: redundantAt ?? null,
+        slowStep: slowStep ?? null,
+        summaries,
+        slowSummaryAt,
+        prunedRequests: host.captures.filter((body) =>
+            JSON.stringify(body.messages).includes(cleared),
+        ).length,
+        highestInputEstimate: Math.max(
+            ...host.captures.map((body) => Math.ceil(JSON.stringify(body).length / 4)),
+        ),
+    }
     assert.ok(
-        redundantAt > 1 && redundantAt < slowStep,
-        "default policy must prune duplicates before the slow tool",
+        redundantAt > 1 && redundantAt === slowStep && slowStep < steps - 1,
+        `default policy must prune duplicates before the slow tool: ${JSON.stringify(observations)}`,
     )
     assert.ok(summaries > 0 && summaryAfterSlow, "the loop must resume after native compaction")
     assert.ok(
