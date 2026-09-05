@@ -13,6 +13,7 @@ let emitted = 0
 let redundantAt
 let summaries = 0
 let summaryAfterSlow = false
+let slowSummaryAt
 let slowIssuedAt
 let slowSettledAfterMs
 let sessionID
@@ -32,6 +33,7 @@ host = await startPublicHost({
             const status = await host.api("/session/status")
             assert.equal(status[sessionID]?.type, "busy", "compaction must not idle the task")
             if (emitted > slowStep) {
+                slowSummaryAt ??= emitted
                 const history = await host.api(`/session/${sessionID}/message`)
                 const slow = toolParts(history).find((part) => part.callID === `call_${slowStep}`)
                 assert.equal(slow?.state.status, "completed")
@@ -118,6 +120,10 @@ try {
         "default policy must prune duplicates before the slow tool",
     )
     assert.ok(summaries > 0 && summaryAfterSlow, "the loop must resume after native compaction")
+    assert.ok(
+        slowSummaryAt > slowStep && slowSummaryAt < steps,
+        "native summary must precede actual subsequent tool execution",
+    )
     assert.equal(completed.info.error, undefined)
     assert.ok(completed.parts.some((part) => part.text === "DCP_CONTINUOUS_TASK completed."))
     const parts = toolParts(await host.api(`/session/${sessionID}/message`))
@@ -167,6 +173,7 @@ try {
                 redundantAt,
                 summaries,
                 summaryAfterSlow,
+                slowSummaryAt,
                 slowSettledAfterMs,
             },
         }) + "\n",
