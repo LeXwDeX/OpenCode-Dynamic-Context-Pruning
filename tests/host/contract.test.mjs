@@ -23,6 +23,10 @@ test("host components: 100 seeded tools hydrate, project, serialize and leave DB
     hostScenario("autonomous-task-wire")
 })
 
+test("host components: redundant reads clear before unique results on the provider wire", () => {
+    hostScenario("redundant-read-wire")
+})
+
 test("host components: explicit model changes avoid stale session limits", () => {
     hostScenario("model-switch")
 })

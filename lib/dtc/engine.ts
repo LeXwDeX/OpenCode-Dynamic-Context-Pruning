@@ -21,6 +21,8 @@ export const DTC_DEFAULTS: DtcConfig = {
 
 export interface TransformStats {
     foldedTools: number
+    /** Subset folded before unique outputs because a later identical result was visible. */
+    redundantTools: number
     estimatedBefore: number | undefined
     estimatedAfter: number | undefined
     targetTokens: number
@@ -49,6 +51,7 @@ const PART_OVERHEAD = 4
 const TOOL_OVERHEAD = 12
 const STRUCTURAL_PARTS = new Set(["step-start", "step-finish", "snapshot", "patch"])
 const OUTPUT_TOOLS = new Set(["read", "grep", "glob", "bash"])
+const REPEATABLE_READ_TOOLS = new Set(["read", "grep", "glob"])
 const ALWAYS_PROTECTED_TOOLS = new Set(["skill", "task", "dcp_prune"])
 
 interface ToolPosition {
@@ -59,6 +62,11 @@ interface ToolPosition {
 interface ToolStep {
     tools: ToolPosition[]
     tokens: number
+}
+
+interface ToolCandidate extends ToolPosition {
+    savings: number
+    redundant: boolean
 }
 
 function hasAttachments(value: unknown): boolean {
@@ -226,6 +234,47 @@ function outputSavings(part: PartLike, config: DtcConfig): number {
     return savings > 0 && savings >= config.minimumSavingsTokens ? savings : 0
 }
 
+/** Compare complete read results, never paths alone. Only an eligible, still-visible
+ * later result can witness redundancy; recent results can witness but cannot fold. */
+function outputCandidates(
+    messages: readonly MessageLike[],
+    steps: readonly ToolStep[],
+    firstProtected: number,
+    config: DtcConfig,
+): ToolCandidate[] {
+    const candidates: ToolCandidate[] = []
+    const seen = new Map<string, Set<string>>()
+    for (let index = steps.length - 1; index >= 0; index--) {
+        const positions = steps[index]!.tools
+        for (let toolIndex = positions.length - 1; toolIndex >= 0; toolIndex--) {
+            const position = positions[toolIndex]!
+            const part = messages[position.message]!.parts![position.part]!
+            const savings = outputSavings(part, config)
+            if (savings === 0) continue
+            let redundant = false
+            if (REPEATABLE_READ_TOOLS.has(part.tool!)) {
+                const key = JSON.stringify([part.tool, part.state!.input ?? {}])
+                const output = part.state!.output!
+                let outputs = seen.get(key)
+                if (!outputs) {
+                    outputs = new Set()
+                    seen.set(key, outputs)
+                }
+                redundant = outputs.has(output)
+                outputs.add(output)
+            }
+            if (index < firstProtected) candidates.push({ ...position, savings, redundant })
+        }
+    }
+    // Each pass retains chronological order. The second pass may still discard
+    // unique evidence (including the last copy) if redundancy cannot meet budget.
+    candidates.reverse()
+    return [
+        ...candidates.filter((candidate) => candidate.redundant),
+        ...candidates.filter((candidate) => !candidate.redundant),
+    ]
+}
+
 function validateConfig(config: DtcConfig): void {
     if (
         !Number.isSafeInteger(config.protectRecentSteps) ||
@@ -258,6 +307,7 @@ export function projectMessages(
     const estimatedBefore = estimateMessages(messages)
     const stats: TransformStats = {
         foldedTools: 0,
+        redundantTools: 0,
         estimatedBefore,
         estimatedAfter: estimatedBefore,
         targetTokens,
@@ -284,15 +334,12 @@ export function projectMessages(
 
     let remaining = estimatedBefore
     const selected: ToolPosition[] = []
-    for (let index = 0; index < firstProtected; index++) {
-        if (!options.force && remaining <= targetTokens) break
-        for (const position of steps[index]!.tools) {
+    if ((options.force || remaining > targetTokens) && firstProtected > 0) {
+        for (const candidate of outputCandidates(messages, steps, firstProtected, config)) {
             if (!options.force && remaining <= targetTokens) break
-            const part = messages[position.message]!.parts![position.part]!
-            const savings = outputSavings(part, config)
-            if (savings === 0) continue
-            selected.push(position)
-            remaining -= savings
+            selected.push(candidate)
+            remaining -= candidate.savings
+            if (candidate.redundant) stats.redundantTools++
         }
     }
 

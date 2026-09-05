@@ -19,9 +19,28 @@ The known candidate set is read/grep/glob and bash with explicit `metadata.exit 
 
 Recent protection uses native step markers, or a whole assistant message when markers are absent. All tools in one parallel step are kept together. Both the minimum step count and minimum token count must be retained. A single huge step is protected even if this leaves the request over budget.
 
+Candidate selection first removes redundant old read/grep/glob outputs. It compares the complete serialized input and exact output, not a path or lossy hash. A reverse scan identifies later eligible visible copies, including copies inside protected recent steps. Cleared, unsuccessful, instruction-bearing and otherwise protected results cannot establish redundancy. Each selection pass preserves chronological order: redundant copies first, other eligible outputs second. The second pass can clear a last copy when the budget still requires lossy folding. Both passes keep the same savings threshold and protections, and neither runs automatically below budget. Bash and write tools are not assigned read redundancy semantics.
+
 Estimation includes full inputs even when the corresponding output already has a compacted marker. Known compaction/subtask parts use the host's fixed rendered text; interrupted tool errors include the output carried in metadata. Unrecognized media/content yields an unknown estimate, not zero tokens. An unsatisfied budget is reported; it never permits deleting other kinds of information.
 
 Known user reference markers (`file` with `text/plain` or `application/x-directory`, and `agent`) are omitted by the host serializer. Their expanded content is carried in separate text parts and remains fully counted. The markers themselves are preserved. Attachments retained on already-compacted successful tools do not reach the model, so they do not invalidate that cleared-output estimate. This exception does not extend to live media or unfamiliar part/role combinations.
+
+## Design review: pruning, consolidation and noise
+
+The review uses v6.0.2 at `6117e6f` as the baseline. Its request fidelity fixes are preserved. The defect reproduced in this delivery is selection by age alone: with a unique old result followed by three identical reads, and a budget requiring only one fold, the baseline clears the unique result. The updated engine clears the first redundant read instead; both reach the budget, but only the update retains the unique evidence. This is a deterministic content-selection improvement, not evidence of improved real-model task success.
+
+| Design goal                                   | Current limitation                                                                                                                                                                         | Delivery and follow-up                                                                                                                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consolidate repeated content                  | Age alone ignores exact redundancy; the last patch to a file does not necessarily contain earlier changes.                                                                                 | Fix read-output selection in #58. Keep complete inputs and call identities. [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61) requires versioned, recoverable artifact snapshots before consolidating edits. |
+| Remove failed attempts with no value          | A failed tool can contain the original root cause or have already changed external state; error status does not establish zero effect. Native cleared markers do not clear error payloads. | [#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62) defines terminal-state, side-effect and recovery evidence plus a root-cause-preserving retry summary. Error content remains intact today.                  |
+| Summarize distant content, retain recent work | Complete recent tool steps are protected, but clearing distant output loses its facts. Assistant text and long inputs can still dominate the budget.                                       | Keep native compaction ownership. [#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63) defines traceable task state and recovery references; a placeholder is not a factual summary.                            |
+| Remove or summarize irrelevant branches       | Word overlap does not prove task dependency or irrelevance; a branch may share constraints or be resumed later.                                                                            | #63 requires explicit task/branch evidence, retained shared dependencies, restoration and real-model quality evaluation before automatic branch cleanup.                                                                                |
+
+These follow-ups are scoped design work, not implemented features. Earlier v5 issues #25, #26 and #27 used structural deletion, synthetic input fields and lexical topic inference. Those paths were replaced by v6 issue #35; the new work requires host capabilities and evidence rather than re-enabling them.
+
+For edit consolidation, test two edits to different parts of the same file: retaining only the last patch loses the first change. For retry cleanup, test a shell command that writes a file and then fails: retaining only its final error loses a real side effect. For branch summaries, test a task switch followed by a return to the original task and a cross-branch prerequisite expressed in different vocabulary. Acceptance must include restored evidence and actual task continuation, alongside token savings, latency and error rates.
+
+The public engine interface remains `projectMessages`; the selection policy is internal to that module. No additional runtime configuration or persistent cache is introduced. The new `redundantTools` statistic is a subset of `foldedTools` and contains no conversation text.
 
 ## Host contract and its limits
 
@@ -56,6 +75,8 @@ npm run check:package
 ```
 
 They cover long single-user tasks, complete-step protection, independent read pages and repeated calls, failed and interrupted tools, unknown inputs, model switching, ambiguous identity, one-request controls, capacity and commit failures.
+
+The redundancy regressions verify unique evidence survives a one-fold budget, full inputs and changed outputs stay independent, cleared/failed copies do not count as surviving evidence, complete recent parallel steps stay protected, and ordinary lossy folding still handles remaining pressure. A real-host component scenario hydrates five stored tool calls, invokes the loaded plugin, and serializes an Anthropic request: exactly the older redundant result is cleared, the unique and latest results reach the wire, input/result pairing is complete, and the database snapshot remains unchanged. The external model response is controlled; this proves serialization and storage fidelity, not semantic task quality.
 
 The real-host suite pins [OpenCode-GraphAgent](https://github.com/LeXwDeX/OpenCode-GraphAgent) at `8d9972908c308da1836a004cebe27c7c23db1acc`. The source revision is checked before execution. Prepare a separate checkout:
 
@@ -116,3 +137,5 @@ The Node runner validates the executable identity, builds DCP, and launches four
 The v6 changes are tracked by issues #34, #35 and #36. Historical audits describe earlier versions; they are not the current architecture contract.
 
 Publish through the repository's trusted npm publishing workflow after the reviewed version is landed and tagged. Local package checks validate the ESM graph and tarball contents; do not duplicate a version publication from the workstation.
+
+The publish workflow requires `GITHUB_REF` to equal `refs/tags/v<package.json version>`, including manual dispatch. It runs formatting, types, tests, package verification and dependency audit before npm publication. Branch pushes only validate code; they do not publish. This delivery fixes missing publication tests and tag/version validation in #59 and prepares patch version 6.0.3; the version is not published until the matching reviewed tag is pushed.

@@ -11,12 +11,14 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 1. 从本次消息中的明确会话身份和最新用户消息的模型引用出发，通过宿主只读模型目录取得当前限额。缺少身份、模型或有效预算时保持原文。
 2. 估算消息正文、完整工具输入、输出及协议开销。输出预算预先扣除，默认的 `targetRatio` 为稍后加入的系统提示和工具定义留出余量。
 3. 保护最近的完整工具执行步骤：默认至少 4 步、至少 16,000 个估算 tokens，两项同时满足。一次用户请求内的多次工具执行也能区分远近；同一步中的并行工具一起保护。
-4. 超过目标时，从旧到新选择有足够收益的成功工具输出，设置宿主原生 `state.time.compacted` 标记。宿主在模型请求中显示 `[Old tool result content cleared]`，输入和调用身份仍完整存在。
+4. 超过目标时，优先折叠重复的旧读取输出，再从旧到新选择其他有足够收益的成功工具输出。只设置宿主原生 `state.time.compacted` 标记；宿主在模型请求中显示 `[Old tool result content cleared]`，输入和调用身份仍完整存在。
 5. 在独立结果上完成计算，成功后提交请求副本；失败保持原文。
 
 只处理已核实的 `read`、`grep`、`glob`，以及明确记录退出码 0 的 `bash` 输出。错误、未完成工具、未知工具、附件、技能/子任务结果及携带指令的读取输出（包括动态加载的指令）受到保护。直接读取 `AGENTS.md`、`AGENTS.override.md`、`CLAUDE.md`、`CONTEXT.md` 和 `SKILL.md` 也受保护，不依赖动态加载标记。用户可以增加受保护工具，但不能取消内置保护。
 
-用户消息、助手文本、推理及签名、工具输入和错误内容逐字保留。消息和 parts 的数量、顺序、身份及调用配对保持不变。没有话题猜测、机械摘要、输入缩减、调用合并或去重。
+重复优先规则仅适用于 `read`、`grep`、`glob`：工具名、完整输入的 JSON 序列化结果和完整输出均相同，且后面还有未被清理的合格副本。同路径的不同分页、修改前后的不同结果均独立处理。重复清理阶段保留最新副本；如果仍超预算，后续有损折叠仍可能清理它。低于预算时不主动去重，单项收益门槛和近期保护始终有效。
+
+用户消息、助手文本、推理及签名、工具输入和错误内容逐字保留。消息和 parts 的数量、顺序、身份及调用配对保持不变。没有话题猜测、机械摘要、输入缩减或工具调用合并。重复输出优先清理不会把多次调用改写成一次调用。
 
 普通 `@文件`、`@目录` 和 `@agent` 引用的宿主标记不会阻止剪枝：引用展开后的文本照常计算，标记原样保留。已被宿主压缩的工具按清理后的输出估算，即使原始历史仍保存附件。实际仍会发送给模型的媒体或未知内容继续保留原文，不猜测其 token 数。
 
@@ -79,6 +81,12 @@ GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动�
 
 三个整数参数均不能超过 JavaScript 安全整数上限 `9007199254740991`；`protectedTools` 中每个名称必须包含非空白字符。无效 JSONC 整层忽略；类型错误或越界的字段保留上一层有效值并显示提示。所有状态仅存在于插件进程内，控制标志有容量上限。
 
+投影统计中的 `foldedTools` 是全部折叠数量，`redundantTools` 是其中因后续存在相同完整读取结果而优先清理的数量。后者不代表所有重复调用都已合并，也不保证最后一份输出在后续预算清理中永久保留。
+
+## 设计方向与当前范围
+
+本版本修复了“先丢掉唯一结果，却保留重复结果”的清理顺序。连续修改合并需要完整版本快照；失败重试去噪需要保留根因与部分副作用；远处内容和已结束分支需要有来源的任务摘要。它们的实现依赖与验收已分别记录在 [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61)、[#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62)、[#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63)，尚未启用。设计评估见[架构文档](./ARCHITECTURE.md#design-review-pruning-consolidation-and-noise)。
+
 ## 从 5.x 及更早版本升级
 
 6.0 直接替换旧引擎，不提供旧策略开关：
@@ -97,5 +105,7 @@ GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动�
 使用 npm 和 Node.js 的 `node:test`：`npm test`、`npm run typecheck`、`npm run format:check`、`npm run check:package`。真实宿主测试为 `npm run test:host`；环境准备及验证范围见[架构文档](./ARCHITECTURE.md)。
 
 开发工具链使用 Node.js 26.8.1 和 npm 12.0.2；执行 `npm ci --no-audit --no-fund` 安装，再单独运行 `npm audit --audit-level=high`。版本升级、安装脚本许可和上游依赖约束见[升级记录](./DEPENDENCY_UPGRADE.md)。
+
+npm 通过 GitHub Actions trusted publishing 发布。普通分支提交不会发版；合并并审查版本变更后，推送与 `package.json` 一致的 `v<version>` 标签。手动运行发布工作流也必须选择该版本标签。发布前校验标签、格式、类型、测试、包内容和依赖审计；本地不重复执行 `npm publish`。
 
 许可证：[AGPL-3.0-or-later](./LICENSE)。

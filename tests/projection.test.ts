@@ -344,6 +344,149 @@ test("same-input calls, hash collisions, and read pages keep independent identit
     }
 })
 
+function repeatedReads(): MessageLike[] {
+    const source = conversation(5)
+    const parts = tools(source)
+    for (const index of [1, 2, 3]) {
+        parts[index]!.state!.input = { filePath: "/src/repeated.ts", offset: 1, limit: 100 }
+        parts[index]!.state!.output = "Repeated evidence\n" + "r".repeat(4000)
+    }
+    return source
+}
+
+function foldOne(source: MessageLike[]) {
+    return projectMessages(source, {
+        inputBudget: estimateMessages(source)! - 900,
+        config: { ...DTC_DEFAULTS, targetRatio: 1, protectRecentSteps: 1, protectRecentTokens: 0 },
+        now: 123456,
+    })
+}
+
+test("redundant reads are folded before the oldest unique evidence", () => {
+    const source = repeatedReads()
+    const before = structuredClone(source)
+    const projected = foldOne(source)
+    const parts = tools(projected.messages)
+    assert.equal(parts[0]!.state!.time!.compacted, undefined, "unique evidence survives")
+    assert.equal(projected.stats.foldedTools, 1)
+    assert.equal(projected.stats.redundantTools, 1)
+    assert.equal(projected.stats.overBudget, false)
+    assert.equal(parts[1]!.state!.time!.compacted, 123456, "oldest redundant read folds first")
+    assert.equal(parts[3]!.state!.time!.compacted, undefined, "latest copy stays visible")
+    assert.equal(projected.stats.estimatedAfter, estimateMessages(projected.messages))
+    assert.deepEqual(source, before)
+    for (const part of parts) delete part.state!.time!.compacted
+    assert.deepEqual(projected.messages, before, "only native output markers may change")
+})
+
+test("identical grep and glob results receive the same redundancy priority", () => {
+    for (const tool of ["grep", "glob"]) {
+        const source = repeatedReads()
+        for (const part of tools(source).slice(1, 4)) {
+            part.tool = tool
+            part.state!.input = { pattern: "*.ts", path: "/src" }
+        }
+        assert.equal(foldOne(source).stats.redundantTools, 1)
+    }
+})
+
+test("full input and output equality is required for redundancy priority", () => {
+    for (const change of [
+        (part: PartLike, index: number) => (part.state!.input!.offset = index * 100),
+        (part: PartLike, index: number) => (part.state!.input!.limit = index * 10),
+        (part: PartLike, index: number) => (part.state!.output += `revision ${index}`),
+        (part: PartLike, index: number) => (part.tool = ["read", "grep", "glob"][index - 1]),
+    ]) {
+        const source = repeatedReads()
+        tools(source)
+            .slice(1, 4)
+            .forEach((part, index) => change(part, index + 1))
+        const projected = foldOne(source)
+        assert.equal(projected.stats.redundantTools, 0)
+        assert.equal(tools(projected.messages)[0]!.state!.time!.compacted, 123456)
+    }
+})
+
+test("repeated bash commands and writes do not acquire read-only redundancy semantics", () => {
+    for (const tool of ["bash", "edit", "write", "apply_patch"]) {
+        const source = repeatedReads()
+        for (const part of tools(source).slice(1, 4)) {
+            part.tool = tool
+            part.state!.metadata = { exit: 0 }
+        }
+        assert.equal(foldOne(source).stats.redundantTools, 0)
+    }
+})
+
+test("a cleared or unsuccessful later copy is not evidence that an output remains visible", () => {
+    for (const change of [
+        (part: PartLike) => (part.state!.time!.compacted = 999),
+        (part: PartLike) => {
+            part.state!.status = "error"
+            part.state!.error = "read failed"
+        },
+        (part: PartLike) => (part.state!.status = "running"),
+        (part: PartLike) => (part.state!.metadata = { loaded: ["/src/AGENTS.md"] }),
+    ]) {
+        const source = repeatedReads()
+        tools(source).slice(2, 4).forEach(change)
+        const projected = foldOne(source)
+        assert.equal(projected.stats.redundantTools, 0)
+        assert.equal(tools(projected.messages)[0]!.state!.time!.compacted, 123456)
+    }
+})
+
+test("a recent copy can replace old duplicates while its whole parallel step is protected", () => {
+    const source = repeatedReads()
+    const latest = tools(source)[3]!
+    const sibling = structuredClone(latest)
+    sibling.id = "parallel-copy"
+    sibling.callID = "parallel-call"
+    source.at(-1)!.parts!.push(sibling)
+    const projected = run(source, { force: true })
+    assert.equal(projected.stats.redundantTools, 3)
+    assert.deepEqual(projected.messages.at(-1), source.at(-1))
+})
+
+test("remaining budget pressure still uses ordinary oldest-first folding after duplicates", () => {
+    const source = repeatedReads()
+    const projected = projectMessages(source, {
+        inputBudget: estimateMessages(source)! - 2900,
+        config: { ...DTC_DEFAULTS, targetRatio: 1, protectRecentSteps: 1, protectRecentTokens: 0 },
+        now: 123456,
+    })
+    assert.equal(projected.stats.redundantTools, 2)
+    assert.equal(projected.stats.foldedTools, 3)
+    assert.equal(projected.stats.overBudget, false)
+    assert.deepEqual(
+        tools(projected.messages).map((part) => !!part.state!.time!.compacted),
+        [true, true, true, false, false],
+    )
+})
+
+test("repeated instructions and explicit tool protections outrank redundancy", () => {
+    for (const filePath of ["/src/AGENTS.md", "/src/CONTEXT.md", "/src/SKILL.md"]) {
+        const source = repeatedReads()
+        for (const part of tools(source).slice(1, 4)) part.state!.input!.filePath = filePath
+        assert.equal(foldOne(source).stats.redundantTools, 0)
+    }
+    const source = repeatedReads()
+    const projected = projectMessages(source, {
+        inputBudget: 1,
+        config: { ...DTC_DEFAULTS, protectedTools: ["read"] },
+        force: true,
+    })
+    assert.equal(projected.stats.foldedTools, 0)
+    assert.deepEqual(projected.messages, source)
+})
+
+test("redundancy does not activate below budget or bypass the savings threshold", () => {
+    const source = repeatedReads()
+    assert.deepEqual(run(source, { inputBudget: 1000000 }).messages, source)
+    for (const part of tools(source).slice(1, 4)) part.state!.output = "small repeated success"
+    assert.equal(run(source, { force: true }).stats.redundantTools, 0)
+})
+
 test("successful projection is independent of caller objects even when nothing folds", () => {
     const source = conversation(1)
     const projected = run(source, { inputBudget: 100000 })

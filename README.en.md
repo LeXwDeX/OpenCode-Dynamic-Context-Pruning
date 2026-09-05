@@ -10,11 +10,13 @@ The plugin resolves the current model from explicit message identity and the hos
 
 The engine preserves at least the latest four complete tool execution steps and 16,000 estimated tokens of recent steps. Both conditions apply. One user request can contain many separate steps; parallel tools in one step remain protected together.
 
-When history exceeds 70% of the conservative input budget, eligible old successful outputs are folded oldest first until the target is reached or no safe candidates remain. A fold only sets the native `state.time.compacted` marker. The host renders `[Old tool result content cleared]`; tool inputs and call/result identities remain intact.
+When history exceeds 70% of the conservative input budget, redundant old read outputs are folded first, followed by other eligible old successful outputs in chronological order until the target is reached or no safe candidates remain. A fold only sets the native `state.time.compacted` marker. The host renders `[Old tool result content cleared]`; tool inputs and call/result identities remain intact.
 
 Eligible tools are known `read`, `grep`, `glob`, and `bash` with an explicit zero exit status. Errors, running tools, unknown tools, attachments, skill/task results, and instruction-bearing reads (including dynamically loaded instructions) remain protected. Direct reads of `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, `CONTEXT.md`, and `SKILL.md` are also protected without dynamic-loading metadata. Additional tools can be protected in configuration.
 
-User instructions, assistant text, reasoning signatures, tool inputs, errors, message/part counts, identities and ordering remain unchanged. There is no topic inference, synthetic digest, input reduction, structural merging, or deduplication. Projection is prepared independently and committed only on success.
+Redundancy priority applies only to `read`, `grep`, and `glob` with identical tool names, JSON-serialized complete inputs, and byte-identical complete outputs, backed by a later eligible copy that is still visible. Different read pages and changed file contents stay independent. The latest copy survives the redundancy pass, but may still be folded by the subsequent lossy budget pass. This does not activate below budget or bypass savings thresholds and recent-step protections.
+
+User instructions, assistant text, reasoning signatures, tool inputs, errors, message/part counts, identities and ordering remain unchanged. There is no topic inference, synthetic digest, input reduction, or structural tool-call merging. Prioritizing redundant outputs does not turn multiple executions into a single call. Projection is prepared independently and committed only on success.
 
 Host markers for ordinary file, directory, and agent references do not disable pruning. Their expanded text is counted and the markers remain intact. Already-compacted tools are estimated using the host's cleared output, even when stored history retains attachments. Media that still reaches the model and unfamiliar content keep the request unchanged rather than receiving a guessed token cost.
 
@@ -56,6 +58,12 @@ Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `
 
 `protectRecentSteps` is a positive integer; `protectRecentTokens` is a nonnegative integer; `targetRatio` is in `(0, 1]`; `minimumSavingsTokens` is a positive integer. All three integer settings must be at most JavaScript's maximum safe integer, `9007199254740991`. Every `protectedTools` name must contain a non-whitespace character; these tools add protections without disabling built-in ones. Invalid JSONC rejects the entire layer; invalid or out-of-range fields retain previous valid values. `autoUpdate` only notifies. Debug logs contain operational metadata, not conversation dumps.
 
+Projection statistics report all folded outputs as `foldedTools`; `redundantTools` counts the subset prioritized because a later identical read result remained visible. This is not a count of merged calls or a promise to permanently retain the last copy through further budget cleanup.
+
+## Design direction and current scope
+
+This version fixes the selection order that discarded unique evidence before redundant evidence. Safe edit-chain consolidation needs complete version snapshots; failed-retry cleanup needs root-cause and partial-side-effect evidence; distant context and completed branches need traceable task summaries. Their dependencies and acceptance criteria are tracked in [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61), [#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62), and [#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63). These capabilities are not enabled. See the [design review](./ARCHITECTURE.md#design-review-pruning-consolidation-and-noise).
+
 ## Migrating to v6
 
 The old engine is removed, without a legacy mode. The retired `tailTurns`, `lowWatermarkRatio`, `driftThreshold`, `toolOutputKeepChars`, `mergeRuns` and `commands.*` settings produce migration notices and are ignored.
@@ -71,5 +79,7 @@ Restart OpenCode after upgrading. Stored history requires no migration.
 Use npm and Node's `node:test`: `npm test`, `npm run typecheck`, `npm run format:check`, and `npm run check:package`. Real-host validation uses `npm run test:host`; setup is documented in [architecture](./ARCHITECTURE.md).
 
 The development toolchain uses Node.js 26.8.1 and npm 12.0.2. Install with `npm ci --no-audit --no-fund`, then run `npm audit --audit-level=high` separately. See the [upgrade record](./DEPENDENCY_UPGRADE.md) for versions, install-script permissions and upstream dependency constraints.
+
+npm publication uses GitHub Actions trusted publishing. Ordinary branch pushes do not publish. After the reviewed version is merged, push its `v<version>` tag matching `package.json`. Manual workflow dispatch must also select that version tag. The workflow checks tag identity, formatting, types, tests, package contents, and dependency audit before publishing; do not publish the same version locally.
 
 License: [AGPL-3.0-or-later](./LICENSE).
