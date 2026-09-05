@@ -2,7 +2,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "$id": "https://raw.githubusercontent.com/LeXwDeX/opencode-dynamic-context-pruning/master/dcp.schema.json",
     "title": "DCP v6 configuration",
-    "description": "Request-scoped compression of old successful tool outputs. The host retains ownership of session storage and native compaction.",
+    "description": "Request-scoped compression of old successful tool outputs. DCP never pauses or cancels execution; the host retains ownership of session storage, execution and native compaction.",
     "type": "object",
     "additionalProperties": false,
     "properties": {
@@ -24,6 +24,7 @@
         },
         "dtc": {
             "type": "object",
+            "description": "Enabled by default with redundancy-first read output selection. No manual configuration is required; all recent-step and content protections remain in force.",
             "additionalProperties": false,
             "properties": {
                 "enabled": {

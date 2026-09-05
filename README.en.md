@@ -26,11 +26,15 @@ The host may start automatic compaction from the previous response's reported us
 
 ## Controls
 
+**Compression does not control the agent execution state machine.** DCP only handles an already-scheduled request copy. It does not pause or cancel tools, wait for stopped work to compress, trigger summaries, or restart tasks. Projection failure retains the original request and returns to the existing flow. Tool settlement, continuation after native compaction, and explicit user cancellation remain host responsibilities; host execution defects must be ruled out for the specific runtime version.
+
 The model-facing `dcp_prune` tool requests one fold on the next ordinary request, subject to the same protections. It returns immediately and does not permanently change policy.
 
 Native `/compact` keeps its own prompt and checkpoint behavior. DCP never calls summarize, writes session history, or changes host compaction defaults. Its compacting hook arms one skip for the following transform in that session.
 
 ## Installation and configuration
+
+No configuration file is needed. Automatic pruning and redundancy priority are enabled by default, retaining at least 4 complete recent steps and 16,000 estimated tokens, with a history budget ratio of 0.7 and minimum per-output savings of 512 tokens. These retain the verified protection and savings thresholds; redundancy priority adds no switch to tune. Regression tests keep the runtime defaults, schema, and both README examples aligned. Existing valid user settings still override defaults through the documented layers.
 
 Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [architecture and validation](./ARCHITECTURE.md) for limitations.
 

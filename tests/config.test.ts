@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import Ajv from "ajv"
+import * as jsoncParser from "jsonc-parser"
 import { getConfig, getDeprecatedConfigKeys, validateConfigTypes } from "../lib/config"
 
 const schema = JSON.parse(readFileSync(new URL("../dcp.schema.json", import.meta.url), "utf8"))
@@ -55,6 +56,21 @@ test("defaults expose one output policy and do not create user configuration", (
     assert.equal(new Ajv({ useDefaults: true }).compile(schema)(schemaDefaults), true)
     assert.deepEqual(schemaDefaults, config)
     assert.equal(existsSync(join(root, "global")), false)
+})
+
+test("both README examples are the built-in policy without manual tuning", (t) => {
+    const { ctx } = workspace(t)
+    const config = getConfig(ctx)
+    for (const file of ["README.md", "README.en.md"]) {
+        const readme = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+        const example = [...readme.matchAll(/```jsonc\n([\s\S]*?)\n```/g)].find((match) =>
+            match[1]!.includes('"protectRecentSteps"'),
+        )
+        assert.ok(example, `${file} must show the default configuration`)
+        const { $schema, ...documented } = jsoncParser.parse(example[1]!)
+        assert.equal(typeof $schema, "string")
+        assert.deepEqual(documented, config, `${file} must match zero-configuration behavior`)
+    }
 })
 
 test("schema and runtime agree on supported integer option boundaries", () => {
