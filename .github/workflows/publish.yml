@@ -26,6 +26,9 @@ jobs:
                   registry-url: "https://registry.npmjs.org"
                   package-manager-cache: false
 
+            - name: Verify release tag matches package version
+              run: node scripts/verify-release.mjs
+
             - name: Install and verify npm CLI
               run: |
                   npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
@@ -42,8 +45,14 @@ jobs:
             - name: Type check
               run: npm run typecheck
 
-            - name: Build
-              run: npm run build
+            - name: Format check
+              run: npm run format:check
+
+            - name: Test
+              run: npm test
+
+            - name: Build and verify package
+              run: npm run check:package
 
             - name: Ensure version is not already published
               run: |
