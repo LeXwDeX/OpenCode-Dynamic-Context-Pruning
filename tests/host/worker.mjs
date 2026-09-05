@@ -434,6 +434,63 @@ scenario("model-switch", async () => {
     })
 })
 
+scenario("redundant-read-wire", async () => {
+    const { estimateMessages } = await import(pathToFileURL(join(root, "lib/dtc/engine.ts")).href)
+    await writeFile(
+        join(process.env.XDG_CONFIG_HOME, "opencode/dcp.jsonc"),
+        JSON.stringify({
+            enabled: true,
+            autoUpdate: false,
+            dtc: { protectRecentSteps: 1, protectRecentTokens: 0, targetRatio: 1 },
+        }),
+    )
+    const source = autonomousTask(smallModel, 5)
+    for (const index of [2, 3, 4]) {
+        const state = source[index].parts.at(-1).state
+        state.input = { filePath: "/src/repeated.ts", offset: 1, limit: 100 }
+        state.output = "REPEATED-EVIDENCE: " + "same complete content ".repeat(500)
+    }
+    const budget = estimateMessages(source) - 2000
+    const model = { ...smallModel, limit: { context: budget + 4000, output: 4000 } }
+    const providers = {
+        data: { providers: [{ id: "anthropic", models: { [model.id]: model } }] },
+    }
+    await withDatabase(source, async (messages) => {
+        const before = structuredClone(messages)
+        await withPlugin(
+            (host) =>
+                Effect.gen(function* () {
+                    yield* host.trigger("experimental.chat.messages.transform", {}, { messages })
+                }),
+            providers,
+        )
+        const blocks = await wire(messages, model)
+        const calls = blocks.filter((block) => block.type === "tool_use")
+        const results = blocks.filter((block) => block.type === "tool_result")
+        assert.deepEqual(
+            calls.map((block) => block.id),
+            results.map((block) => block.tool_use_id),
+        )
+        assert.equal(calls.length, 5)
+        assert.deepEqual(
+            results.map((block) => block.content === "[Old tool result content cleared]"),
+            [false, true, false, false, false],
+        )
+        assert.equal(results[0].content, before[1].parts.at(-1).state.output)
+        assert.equal(results[3].content, before[4].parts.at(-1).state.output)
+        assert.deepEqual(
+            calls.map((block) => block.input),
+            before.slice(1).map((m) => m.parts.at(-1).state.input),
+        )
+        for (const message of messages) {
+            for (const part of message.parts) {
+                if (part.type === "tool") delete part.state.time.compacted
+            }
+        }
+        assert.deepEqual(messages, before)
+    })
+})
+
 scenario("native-compaction-order", async () => {
     await withDatabase(autonomousTask(), async (messages) => {
         const before = structuredClone(messages)

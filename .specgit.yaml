@@ -1,11 +1,14 @@
 version: 1
-delivery: release-6-0-2
+delivery: context-pruning-design
 context:
   kind: branch
-  branch: chore/56-release-6-0-2
+  branch: fix/58-context-pruning-design
 issues:
-  - 56
+  - 58
+  - 59
 issueKinds:
-  - issue: 56
-    kind: kind::chore
-pr: 57
+  - issue: 58
+    kind: kind::fix
+  - issue: 59
+    kind: kind::ci
+pr: 60

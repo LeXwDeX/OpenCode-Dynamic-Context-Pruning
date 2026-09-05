@@ -23,6 +23,10 @@ test("host components: 100 seeded tools hydrate, project, serialize and leave DB
     hostScenario("autonomous-task-wire")
 })
 
+test("host components: redundant reads clear before unique results on the provider wire", () => {
+    hostScenario("redundant-read-wire")
+})
+
 test("host components: explicit model changes avoid stale session limits", () => {
     hostScenario("model-switch")
 })
@@ -85,6 +89,15 @@ test("public host HTTP: hard input rejection recovers or terminates without repl
     const { metrics } = publicHostScenario("hard-input-limit", "hard-limit.mjs")
     assert.equal(metrics.length, 3)
 })
+
+for (const scenario of ["redundant-continuity-sdk", "redundant-continuity-native"]) {
+    test(`public host HTTP: ${scenario} preserves execution through pruning and compaction`, () => {
+        const { metrics } = publicHostScenario(scenario, "redundant-continuity.mjs")
+        assert.equal(metrics.tools, 32)
+        assert.ok(metrics.redundantAt > 0)
+        assert.equal(metrics.summaryAfterSlow, true)
+    })
+}
 
 for (const scenario of [
     "parallel-success",
