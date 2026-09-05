@@ -12,3 +12,4 @@ issueKinds:
     kind: kind::fix
   - issue: 59
     kind: kind::ci
+pr: 60
