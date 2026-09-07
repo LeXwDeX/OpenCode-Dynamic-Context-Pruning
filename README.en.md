@@ -36,9 +36,9 @@ Native `/compact` keeps its own prompt and checkpoint behavior. DCP never calls 
 
 No configuration file is needed. Automatic pruning and redundancy priority are enabled by default, retaining at least 4 complete recent steps and 16,000 estimated tokens, with a history budget ratio of 0.7 and minimum per-output savings of 512 tokens. These retain the verified protection and savings thresholds; redundancy priority adds no switch to tune. Regression tests keep the runtime defaults, schema, and both README examples aligned. Existing valid user settings still override defaults through the documented layers.
 
-Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [architecture and validation](./ARCHITECTURE.md) for limitations.
+Add `"@lexwdex-org/opencode-dcp@^6"` to OpenCode's `plugin` array. The V1 plugin peer range is `>=1.4.3 <2`; the CI matrix checks minimum/latest V1 types and a pinned real-host contract separately. See [Development](#development) for test setup.
 
-The official GraphAgent 1.0.39 macOS ARM64 artifact can interrupt a running tool during automatic compaction in Native LLM mode, with DCP both enabled and disabled. That combination is unsupported for tasks requiring reliable slow-tool settlement. AI SDK mode on the same artifact passed the slow-tool and explicit-cancellation controls. A passing development-source test does not establish released-artifact compatibility; see [published-host evidence](./ARCHITECTURE.md#published-host-evidence) for the tested scope and reproduction command.
+The official GraphAgent 1.0.39 macOS ARM64 artifact can interrupt a running tool during automatic compaction in Native LLM mode, with DCP both enabled and disabled. That combination is unsupported for tasks requiring reliable slow-tool settlement. AI SDK mode on the same artifact passed the slow-tool and explicit-cancellation controls. A passing development-source test does not establish released-artifact compatibility; see [published-host evidence](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/blob/5ced062ea7a7717883d8001886875ecaaf746e55/ARCHITECTURE.md#published-host-evidence) for the tested scope and reproduction command.
 
 Configuration layers are global `$XDG_CONFIG_HOME/opencode/dcp.jsonc` (default `~/.config/opencode/dcp.jsonc`), `$OPENCODE_CONFIG_DIR/dcp.jsonc`, then the nearest project `.opencode` directory containing a DCP configuration file. Each also accepts `.json`, with JSONC preferred. Directories without a DCP file are skipped during the upward search; only the nearest project layer is used, without merging more distant ancestors. The plugin does not create configuration files.
 
@@ -66,7 +66,7 @@ Projection statistics report all folded outputs as `foldedTools`; `redundantTool
 
 ## Design direction and current scope
 
-This version fixes the selection order that discarded unique evidence before redundant evidence. Safe edit-chain consolidation needs complete version snapshots; failed-retry cleanup needs root-cause and partial-side-effect evidence; distant context and completed branches need traceable task summaries. Their dependencies and acceptance criteria are tracked in [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61), [#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62), and [#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63). These capabilities are not enabled. See the [design review](./ARCHITECTURE.md#design-review-pruning-consolidation-and-noise).
+This version fixes the selection order that discarded unique evidence before redundant evidence. Safe edit-chain consolidation needs complete version snapshots; failed-retry cleanup needs root-cause and partial-side-effect evidence; distant context and completed branches need traceable task summaries. Their dependencies and acceptance criteria are tracked in [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61), [#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62), and [#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63). These capabilities are not enabled. See the [design review](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/blob/5ced062ea7a7717883d8001886875ecaaf746e55/ARCHITECTURE.md#design-review-pruning-consolidation-and-noise).
 
 ## Migrating to v6
 
@@ -80,7 +80,9 @@ Restart OpenCode after upgrading. Stored history requires no migration.
 
 ## Development
 
-Use npm and Node's `node:test`: `npm test`, `npm run typecheck`, `npm run format:check`, and `npm run check:package`. Real-host validation uses `npm run test:host`; setup is documented in [architecture](./ARCHITECTURE.md).
+Use npm and Node's `node:test`: `npm test`, `npm run typecheck`, `npm run format:check`, and `npm run check:package`.
+
+Real-host validation requires a clean, isolated OpenCode checkout pinned to the commit in `scripts/test-host.mjs`. Install Bun and host dependencies following `.github/workflows/pr-checks.yml`, set `OPENCODE_SOURCE_ROOT` to that checkout, then run `npm run test:host`.
 
 The development toolchain uses Node.js 26.8.1 and npm 12.0.2. Install with `npm ci --no-audit --no-fund`, then run `npm audit --audit-level=high` separately. See the [upgrade record](./DEPENDENCY_UPGRADE.md) for versions, install-script permissions and upstream dependency constraints.
 

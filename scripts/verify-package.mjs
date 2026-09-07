@@ -19,7 +19,6 @@ const requiredRepoFiles = [
     "dist/index.d.ts",
     "README.md",
     "README.en.md",
-    "ARCHITECTURE.md",
     "LICENSE",
 ]
 
@@ -29,7 +28,6 @@ const requiredTarballFiles = [
     "dist/index.d.ts",
     "README.md",
     "README.en.md",
-    "ARCHITECTURE.md",
     "LICENSE",
 ]
 
@@ -78,7 +76,7 @@ function assertPackageJsonShape() {
     }
 
     const files = Array.isArray(pkg.files) ? pkg.files : []
-    for (const entry of ["dist/", "README.md", "README.en.md", "ARCHITECTURE.md", "LICENSE"]) {
+    for (const entry of ["dist/", "README.md", "README.en.md", "LICENSE"]) {
         if (!files.includes(entry)) {
             fail(`package.json files must include ${entry}`)
         }

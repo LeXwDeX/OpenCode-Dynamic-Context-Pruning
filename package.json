@@ -69,7 +69,6 @@
         "dist/",
         "README.md",
         "README.en.md",
-        "ARCHITECTURE.md",
         "DEPENDENCY_UPGRADE.md",
         "LICENSE"
     ],
