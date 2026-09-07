@@ -44,9 +44,9 @@ DCP 在 OpenCode 发送模型请求之前，按当前模型预算折叠较旧的
 }
 ```
 
-需要支持 V1 插件接口的 OpenCode，插件 peer 范围为 `>=1.4.3 <2`。类型兼容矩阵检查最低版和最新 V1 版本；运行时契约另有固定真实宿主版本验证，详见[架构与验证](./ARCHITECTURE.md)。不带显式会话身份或模型信息的消息形状不会被猜测或压缩。
+需要支持 V1 插件接口的 OpenCode，插件 peer 范围为 `>=1.4.3 <2`。类型兼容矩阵检查最低版和最新 V1 版本；运行时契约另有固定真实宿主版本验证，环境准备见[开发](#开发)。不带显式会话身份或模型信息的消息形状不会被猜测或压缩。
 
-GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动压缩可能中断仍在运行的工具；DCP 开启和关闭时都可复现。该组合尚不支持需要可靠慢工具结算的任务。相同制品的 AI SDK 模式通过了本次慢工具与显式取消对照。固定开发源码通过测试不能替代已发布制品的运行证据，完整范围和复现入口见[宿主验证](./ARCHITECTURE.md#published-host-evidence)。
+GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动压缩可能中断仍在运行的工具；DCP 开启和关闭时都可复现。该组合尚不支持需要可靠慢工具结算的任务。相同制品的 AI SDK 模式通过了本次慢工具与显式取消对照。固定开发源码通过测试不能替代已发布制品的运行证据，完整范围和复现入口见[宿主验证](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/blob/5ced062ea7a7717883d8001886875ecaaf746e55/ARCHITECTURE.md#published-host-evidence)。
 
 ## 配置
 
@@ -89,7 +89,7 @@ GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动�
 
 ## 设计方向与当前范围
 
-本版本修复了“先丢掉唯一结果，却保留重复结果”的清理顺序。连续修改合并需要完整版本快照；失败重试去噪需要保留根因与部分副作用；远处内容和已结束分支需要有来源的任务摘要。它们的实现依赖与验收已分别记录在 [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61)、[#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62)、[#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63)，尚未启用。设计评估见[架构文档](./ARCHITECTURE.md#design-review-pruning-consolidation-and-noise)。
+本版本修复了“先丢掉唯一结果，却保留重复结果”的清理顺序。连续修改合并需要完整版本快照；失败重试去噪需要保留根因与部分副作用；远处内容和已结束分支需要有来源的任务摘要。它们的实现依赖与验收已分别记录在 [#61](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/61)、[#62](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/62)、[#63](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/issues/63)，尚未启用。设计评估见[架构文档](https://github.com/LeXwDeX/OpenCode-Dynamic-Context-Pruning/blob/5ced062ea7a7717883d8001886875ecaaf746e55/ARCHITECTURE.md#design-review-pruning-consolidation-and-noise)。
 
 ## 从 5.x 及更早版本升级
 
@@ -106,7 +106,9 @@ GraphAgent 1.0.39 的官方 macOS ARM64 制品在 Native LLM 模式下，自动�
 
 ## 开发
 
-使用 npm 和 Node.js 的 `node:test`：`npm test`、`npm run typecheck`、`npm run format:check`、`npm run check:package`。真实宿主测试为 `npm run test:host`；环境准备及验证范围见[架构文档](./ARCHITECTURE.md)。
+使用 npm 和 Node.js 的 `node:test`：`npm test`、`npm run typecheck`、`npm run format:check`、`npm run check:package`。
+
+真实宿主测试需要干净、隔离的 OpenCode 源码副本，固定到 `scripts/test-host.mjs` 指定的提交。按 `.github/workflows/pr-checks.yml` 安装 Bun 和宿主依赖，设置 `OPENCODE_SOURCE_ROOT` 指向该副本，然后执行 `npm run test:host`。
 
 开发工具链使用 Node.js 26.8.1 和 npm 12.0.2；执行 `npm ci --no-audit --no-fund` 安装，再单独运行 `npm audit --audit-level=high`。版本升级、安装脚本许可和上游依赖约束见[升级记录](./DEPENDENCY_UPGRADE.md)。
 

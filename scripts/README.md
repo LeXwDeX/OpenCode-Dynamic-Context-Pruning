@@ -2,7 +2,7 @@
 
 `npm run check:package` builds the plugin and runs `verify-package.mjs` to verify
 the ESM import graph and published file list. `npm run test:host` runs the isolated
-real-host tests through `test-host.mjs`; setup is in [ARCHITECTURE.md](../ARCHITECTURE.md).
+real-host tests through `test-host.mjs`; setup is in [Development](../README.en.md#development).
 
 The Python utilities inspect an existing OpenCode SQLite database in read-only
 mode. Pass an explicit `--db PATH` to select the database; `--help` lists filters.

@@ -1,14 +1,11 @@
 version: 1
-delivery: context-pruning-design
+delivery: documentation-cleanup
 context:
   kind: branch
-  branch: fix/58-context-pruning-design
+  branch: chore/64-documentation-cleanup
 issues:
-  - 58
-  - 59
+  - 64
 issueKinds:
-  - issue: 58
-    kind: kind::fix
-  - issue: 59
-    kind: kind::ci
-pr: 60
+  - issue: 64
+    kind: kind::chore
+pr: 65
