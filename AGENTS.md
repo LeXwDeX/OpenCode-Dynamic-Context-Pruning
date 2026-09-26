@@ -35,7 +35,7 @@ For host integration, set `OPENCODE_SOURCE_ROOT` to a clean, isolated checkout p
 
 Follow history's `feat:`, `fix:`, `test:`, and `chore:` prefixes; use `!` for breaking changes. Example: `fix: preserve pruning with host reference markers`.
 
-PRs should explain motivation, behavior changes, linked issues (`Closes #n`), and validation evidence. Pass formatting, type checks, tests, package verification, compatibility checks, and SpecGit acceptance before merging.
+PRs should explain motivation, behavior changes, linked issues (`Closes #n`), and validation evidence. Pass formatting, type checks, tests, package verification, compatibility checks, and the repository's PR Checks workflow (`.github/workflows/pr-checks.yml`) before merging.
 
 ## Runtime & Configuration Constraints
 
